@@ -2,7 +2,7 @@ from fastapi import FastAPI, APIRouter
 import fastapi_swagger_dark as fsd
 from sqlalchemy import text
 from core.database import engine
-from core.config import settings
+from core.config import settings  # noqa: F401 — also sets LangSmith os.environ vars
 from fastapi.middleware.cors import CORSMiddleware
 from routes.report_routes import router as report_router
 
@@ -30,8 +30,6 @@ app.include_router(router)
 
 # Include report routes
 app.include_router(report_router)
-
-
 
 
 @app.get("/")
