@@ -28,10 +28,11 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# LangSmith reads directly from os.environ, not from pydantic settings.
-# Setting them here ensures every entry-point (FastAPI, standalone scripts)
-# has tracing enabled as soon as core.config is imported.
-os.environ["LANGSMITH_TRACING"] = settings.LANGSMITH_TRACING
-os.environ["LANGSMITH_API_KEY"] = settings.LANGSMITH_API_KEY
-os.environ["LANGSMITH_PROJECT"] = settings.LANGSMITH_PROJECT
-os.environ["LANGSMITH_ENDPOINT"] = settings.LANGSMITH_ENDPOINT
+# LangSmith tracing configuration (latest approach from LangSmith docs)
+# Set environment variables for LangSmith tracing
+# See: https://docs.smith.langchain.com/observability/how_to_guides/trace_with_langgraph
+if settings.LANGSMITH_TRACING.lower() == "true":
+    os.environ["LANGSMITH_TRACING"] = "true"
+    os.environ["LANGSMITH_API_KEY"] = settings.LANGSMITH_API_KEY
+    os.environ["LANGSMITH_PROJECT"] = settings.LANGSMITH_PROJECT
+    os.environ["LANGSMITH_ENDPOINT"] = settings.LANGSMITH_ENDPOINT

@@ -7,25 +7,7 @@ Uses Groq API with LangSmith tracing.
 
 from typing import Optional, List, Dict
 from pydantic import BaseModel, Field
-from langchain_groq import ChatGroq
-from core.config import settings
-import os
-
-
-# Set LangSmith environment variables for tracing
-if settings.LANGSMITH_TRACING:
-    os.environ["LANGCHAIN_TRACING_V2"] = "true"
-    os.environ["LANGCHAIN_ENDPOINT"] = settings.LANGSMITH_ENDPOINT or "https://api.smith.langchain.com"
-    os.environ["LANGCHAIN_API_KEY"] = settings.LANGSMITH_API_KEY or ""
-    os.environ["LANGCHAIN_PROJECT"] = settings.LANGSMITH_PROJECT or "Medicare"
-
-
-# Initialize LLM with tracing
-llm = ChatGroq(
-    model="llama-3.3-70b-versatile",
-    api_key=settings.GROQ_API_KEY,
-    temperature=0.3,
-)
+from core.llm_init import llm
 
 
 class TestResult(BaseModel):

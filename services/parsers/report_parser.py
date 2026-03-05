@@ -18,14 +18,17 @@ _DATE_FMT_WITH_TIME = "%m/%d/%Y %H:%M"
 _DATE_FMT_DATE_ONLY = "%m/%d/%Y"
 
 
-def extract_raw_text(pdf_path: str) -> str:
+def extract_raw_text(pdf_path: str, use_ocr: bool = False) -> str:
     """
     Extract raw text from PDF preserving layout.
+    Automatically detects if OCR is needed for image-based PDFs.
     
     Parameters
     ----------
     pdf_path : str
         Path to PDF file
+    use_ocr : bool
+        Force OCR even for text-based PDFs (default: False)
         
     Returns
     -------
@@ -41,12 +44,18 @@ def extract_raw_text(pdf_path: str) -> str:
     if not path.exists():
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
-    reader = pypdf.PdfReader(str(path))
-    pages: List[str] = []
-    for page in reader.pages:
-        pages.append(page.extract_text(extraction_mode="layout") or "")
-
-    return "\n".join(pages)
+    # Try to use smart OCR extraction if available
+    try:
+        from services.parsers.ocr_parser import extract_text_smart
+        return extract_text_smart(pdf_path, force_ocr=use_ocr)
+    except ImportError:
+        # Fallback to regular extraction if OCR dependencies not installed
+        print("  ℹ️  OCR not available, using standard text extraction")
+        reader = pypdf.PdfReader(str(path))
+        pages: List[str] = []
+        for page in reader.pages:
+            pages.append(page.extract_text(extraction_mode="layout") or "")
+        return "\n".join(pages)
 
 
 def _parse_datetime(value: str) -> Optional[datetime]:
