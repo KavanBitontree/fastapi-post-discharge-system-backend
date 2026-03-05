@@ -11,7 +11,8 @@ class Patient(Base):
     full_name = Column(String, nullable=False)
     phone_number = Column(String, nullable=True)
     whatsapp_id = Column(String, nullable=True)
-    email = Column(String, nullable=True)
+    email = Column(String, nullable=True, unique=True,index=True)
+    password_hash = Column(String, nullable=True)  # For authentication if needed
     dob = Column(Date, nullable=True)
     gender = Column(String, nullable=True)
     address = Column(String, nullable=True)

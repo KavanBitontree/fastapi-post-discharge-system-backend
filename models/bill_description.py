@@ -8,7 +8,6 @@ class BillDescription(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     bill_id = Column(Integer, ForeignKey("bills.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
-    patient_id = Column(Integer, ForeignKey("patients.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
     cpt_code = Column(String, nullable=True)
     description = Column(String, nullable=True)
     qty = Column(Integer, nullable=False, default=1)

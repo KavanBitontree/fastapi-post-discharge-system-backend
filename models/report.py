@@ -10,7 +10,7 @@ class Report(Base):
     id = Column(Integer, primary_key=True, autoincrement=True, index=True)
 
     patient_id = Column(Integer, ForeignKey("patients.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
-
+    report_name = Column(String(255), nullable=False)  # e.g. "Complete Blood Count (CBC)", "Lipid Panel", "Metabolic Panel"
     report_date = Column(DateTime(timezone=True), nullable=True)
     collection_date = Column(DateTime(timezone=True), nullable=True)
     received_date = Column(DateTime(timezone=True), nullable=True)
