@@ -3,7 +3,7 @@ from typing import Optional
 
 class Settings(BaseSettings):
     NEON_DB_URL: str
-    FRONTEND_URL: str
+    FRONTEND_URL: str = "http://localhost:5173"
     ENV: str = "development"
     CLOUD_NAME: str
     CLOUDINARY_API_KEY: str

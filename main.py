@@ -4,20 +4,28 @@ from sqlalchemy import text
 from core.database import engine
 from core.config import settings
 from fastapi.middleware.cors import CORSMiddleware
-
+from routes import register_routes
+from routes import login_routes
+from routes.login_routes import login
+from routes import auth_routes
+from routes import logout_routes
 app = FastAPI(docs_url=None)
 
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        settings.FRONTEND_URL
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+app.include_router(register_routes.router)
+app.include_router(login_routes.router)
+app.include_router(auth_routes.router)
+app.include_router(logout_routes.router)
 router = APIRouter()
 fsd.install(router)
 app.include_router(router)
