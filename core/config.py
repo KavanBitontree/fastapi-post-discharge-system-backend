@@ -27,15 +27,6 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-    LANGSMITH_TRACING: bool = True
-    LANGSMITH_ENDPOINT: str = "https://api.smith.langchain.com"
-    LANGSMITH_API_KEY: str
-    LANGSMITH_PROJECT: str = "Medicare"
-
-
-    class Config:
-        env_file = ".env"
-        extra = "ignore"  # Ignore extra fields in .env
 
 # LangSmith reads directly from os.environ, not from pydantic settings.
 # Setting them here ensures every entry-point (FastAPI, standalone scripts)
