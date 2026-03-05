@@ -2,10 +2,16 @@ from fastapi import FastAPI, APIRouter
 import fastapi_swagger_dark as fsd
 from sqlalchemy import text
 from core.database import engine
-from core.config import settings
+from core.config import settings  # noqa: F401 — also sets LangSmith os.environ vars
 from fastapi.middleware.cors import CORSMiddleware
+from routes.report_routes import router as report_router
 
-app = FastAPI(docs_url=None)
+app = FastAPI(
+    title="Medicare Post-Discharge System API",
+    description="API for managing patient reports, bills, and medications",
+    version="1.0.0",
+    docs_url=None
+)
 
 
 app.add_middleware(
@@ -22,7 +28,8 @@ router = APIRouter()
 fsd.install(router)
 app.include_router(router)
 
-
+# Include report routes
+app.include_router(report_router)
 
 
 @app.get("/")
