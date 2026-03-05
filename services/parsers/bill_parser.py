@@ -103,32 +103,15 @@ def _first(*values) -> str:
 # Public API
 # ---------------------------------------------------------------------------
 
-def extract_raw_text(pdf_path: str, use_ocr: bool = False) -> str:
-    """
-    Extract raw text from PDF.
-    Automatically detects if OCR is needed for image-based PDFs.
-    
-    Parameters
-    ----------
-    pdf_path : str
-        Path to PDF file
-    use_ocr : bool
-        Force OCR even for text-based PDFs (default: False)
-    """
-    # Try to use smart OCR extraction if available
-    try:
-        from services.parsers.ocr_parser import extract_text_smart
-        return extract_text_smart(pdf_path, force_ocr=use_ocr)
-    except ImportError:
-        # Fallback to pdfplumber extraction if OCR dependencies not installed
-        print("  ℹ️  OCR not available, using pdfplumber extraction")
-        parts = []
-        with pdfplumber.open(pdf_path) as pdf:
-            for page in pdf.pages:
-                text = page.extract_text()
-                if text:
-                    parts.append(text)
-        return "\n\n".join(parts)
+def extract_raw_text(pdf_path: str) -> str:
+    """Return the full plain-text content of every page in the PDF."""
+    parts = []
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text()
+            if text:
+                parts.append(text)
+    return "\n\n".join(parts)
 
 
 def parse_bill_pdf(pdf_path: str) -> ParsedBill:
