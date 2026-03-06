@@ -50,7 +50,6 @@ async def upload_and_process_report(
             detail="Only PDF files are accepted"
         )
 
-    pdf_path: Optional[Path] = None
     cloudinary_public_id: Optional[str] = None
 
     try:

@@ -19,7 +19,7 @@ router = APIRouter(prefix="/api/prescriptions", tags=["Prescriptions"])
 
 @router.post("/upload", status_code=status.HTTP_201_CREATED)
 async def upload_and_process_prescription(
-    patient_id: int = Form(..., description="ID of the patient", example=1),
+    patient_id: int = Form(..., description="ID of the patient"),
     file: UploadFile = File(..., description="PDF file of prescription"),
     strategy: str = Form("auto", description="Extraction strategy: 'auto' (default), 'text', or 'vision'"),
     db: Session = Depends(get_db)
@@ -55,7 +55,6 @@ async def upload_and_process_prescription(
             detail="Only PDF files are accepted"
         )
     
-    pdf_path: Optional[Path] = None
     cloudinary_public_id: Optional[str] = None
     
     try:

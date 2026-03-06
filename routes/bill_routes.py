@@ -21,7 +21,7 @@ router = APIRouter(prefix="/api/bills", tags=["Bills"])
 
 @router.post("/upload", status_code=status.HTTP_201_CREATED)
 async def upload_and_process_bill(
-    patient_id: int = Form(..., description="ID of the patient", example=1),
+    patient_id: int = Form(..., description="ID of the patient"),
     file: UploadFile = File(..., description="PDF file of medical bill"),
     strategy: str = Form("auto", description="Extraction strategy: 'auto' (default), 'text', or 'vision'"),
     db: Session = Depends(get_db)
@@ -56,7 +56,6 @@ async def upload_and_process_bill(
             detail="Only PDF files are accepted"
         )
     
-    pdf_path: Optional[Path] = None
     cloudinary_public_id: Optional[str] = None
     
     try:
@@ -213,7 +212,7 @@ async def upload_and_process_bill(
             },
             "processing": {
                 "extraction_strategy": strategy,
-                "file_size_bytes": pdf_path.stat().st_size,
+                "file_size_bytes": len(pdf_content),
             }
         }
         
