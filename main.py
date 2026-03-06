@@ -11,6 +11,9 @@ from routes.login_routes import login
 from routes import auth_routes
 from routes import logout_routes
 from routes import fetch_patient_routes
+from routes.report_routes import router as report_router
+from routes.bill_routes import router as bill_router
+from routes.prescription_routes import router as prescription_router
 app = FastAPI(docs_url=None,
               swagger_ui_parameters={"persistAuthorization": True})
 
