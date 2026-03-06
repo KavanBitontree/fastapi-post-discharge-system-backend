@@ -7,7 +7,7 @@ _ENV_FILE = os.path.join(os.path.dirname(__file__), "..", ".env")
 
 class Settings(BaseSettings):
     NEON_DB_URL: str
-    FRONTEND_URL: str
+    FRONTEND_URL: str = "http://localhost:5173"
     ENV: str = "development"
     CLOUD_NAME: str
     CLOUDINARY_API_KEY: str

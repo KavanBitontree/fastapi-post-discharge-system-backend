@@ -15,7 +15,7 @@ class RefreshToken(Base):
     is_revoked = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     expires_at = Column(DateTime(timezone=True), nullable=False)
-    device_type = Column(SQLEnum(DeviceType), nullable=False)
+    device_type = Column(SQLEnum(DeviceType), nullable=True)
 
     # Relationships
     patient = relationship("Patient", back_populates="refresh_tokens")

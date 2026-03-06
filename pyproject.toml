@@ -10,6 +10,7 @@ dependencies = [
   "huggingface-hub>=1.5.0",
   "langchain-groq>=1.1.2",
   "langsmith>=0.7.10",
+  "passlib[bcrypt]>=1.7.4",
   "pdf2image>=1.17.0",
   "pdfplumber>=0.11.9",
   "psycopg2-binary>=2.9.11",
