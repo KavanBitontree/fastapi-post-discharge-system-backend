@@ -27,7 +27,7 @@ class RegisterController:
             httponly=True,
             samesite="lax",
             secure=False, # True in Production
-            max_age=30  
+            max_age=900
         )
         db_refresh_token = RefreshToken(
             patient_id=new_patient.id,
