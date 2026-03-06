@@ -22,3 +22,11 @@ class MedicineForm(str, Enum):
     INHALER = "inhaler"
     POWDER = "powder"
     OTHER = "other"
+
+
+class SessionStatus(str, Enum):
+    """Telegram session status"""
+    NEW = "new"
+    AWAIT_OTP = "await_otp"
+    AWAIT_MOBILE = "await_mobile"
+    VERIFIED = "verified"

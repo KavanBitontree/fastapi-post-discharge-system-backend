@@ -10,7 +10,6 @@ class Patient(Base):
     id = Column(Integer, primary_key=True, index=True)
     full_name = Column(String, nullable=False)
     phone_number = Column(String, nullable=True)
-    whatsapp_id = Column(String, nullable=True)
     email = Column(String, nullable=True, unique=True,index=True)
     password_hash = Column(String, nullable=True)  # For authentication if needed
     dob = Column(Date, nullable=True)
@@ -27,4 +26,5 @@ class Patient(Base):
     medications = relationship("Medication", back_populates="patient", cascade="all, delete-orphan")
     doctors = relationship("PatientDoctor", back_populates="patient", cascade="all, delete-orphan")
     refresh_tokens = relationship("RefreshToken", back_populates="patient", cascade="all, delete-orphan")
+    telegram_sessions = relationship("TelegramSession", back_populates="patient", cascade="all, delete-orphan")
     chat_history = relationship("ChatHistory", back_populates="patient", cascade="all, delete-orphan")

@@ -10,6 +10,7 @@ from models.medication import Medication
 from models.medication_schedule import MedicationSchedule
 from models.refresh_token import RefreshToken
 from models.chat_history import ChatHistory
+from models.telegram_session import TelegramSession
 
 __all__ = [
     "Patient",
@@ -24,4 +25,5 @@ __all__ = [
     "MedicationSchedule",
     "RefreshToken",
     "ChatHistory",
+    "TelegramSession",
 ]
