@@ -9,6 +9,7 @@ from models.recurrence_type import RecurrenceType
 from models.medication import Medication
 from models.medication_schedule import MedicationSchedule
 from models.refresh_token import RefreshToken
+from models.chat_history import ChatHistory
 
 __all__ = [
     "Patient",
@@ -22,4 +23,5 @@ __all__ = [
     "Medication",
     "MedicationSchedule",
     "RefreshToken",
+    "ChatHistory",
 ]

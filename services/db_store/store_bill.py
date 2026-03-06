@@ -18,8 +18,8 @@ import os
 from decimal import Decimal
 from typing import Optional
 
-from parsers.bill_parser import parse_bill_pdf, extract_raw_text, ParsedBill
-from llm_validators.llm_bill_validator import validate_bill
+from services.parsers.bill_parser import parse_bill_pdf, extract_raw_text, ParsedBill
+from services.llm_validators.llm_bill_validator import validate_bill
 
 
 # ---------------------------------------------------------------------------

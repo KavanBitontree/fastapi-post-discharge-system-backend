@@ -2,23 +2,21 @@
 store_prescription.py  —  Orchestrator
 ----------------------------------------
 Pipeline:
-  1. extract_raw_text        — get full plain text from the prescription PDF
-  2. parse_prescription_pdf  — Stage-1 regex/table extraction → ParsedPrescription
-  3. validate_prescription   — Stage-2 Groq LLM fills every None field +
-                               parses free-text medication instructions
-  4. store_parsed_prescription — insert doctor, medications, schedules, etc. into DB
+  1. parse_prescription_pdf  — Extract prescription using unified LLM extraction with chunking
+  2. store_parsed_prescription — insert doctor, medications, schedules, etc. into DB
 
 Usage::
 
     python store_prescription.py                              # uses default PDF path
     python store_prescription.py path/to/prescription.pdf
+
+NOTE: This is a standalone CLI script. The API uses routes/prescription_routes.py instead.
 """
 import sys
 import os
 from typing import Optional
 
-from parsers.prescription_parser import parse_prescription_pdf, extract_raw_text, ParsedPrescription
-from llm_validators.llm_prescription_validator import validate_prescription
+from services.parsers.prescription_parser import parse_prescription_pdf, ParsedPrescription
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +53,11 @@ def store_parsed_prescription(parsed: ParsedPrescription) -> dict:
     try:
         # ── 1. Find patient ──────────────────────────────────────────────
         patient = None
-        if parsed.patient_email:
+        if hasattr(parsed, 'patient_id') and parsed.patient_id:
+            patient = db.query(Patient).filter(
+                Patient.id == parsed.patient_id
+            ).first()
+        elif parsed.patient_email:
             patient = db.query(Patient).filter(
                 Patient.email == parsed.patient_email
             ).first()
@@ -65,9 +67,9 @@ def store_parsed_prescription(parsed: ParsedPrescription) -> dict:
             ).first()
         if patient is None:
             raise ValueError(
-                f"Patient not found in DB for email={parsed.patient_email} "
-                f"/ phone={parsed.patient_phone}. "
-                "Please store the patient first via store_bill.py."
+                f"Patient not found in DB for id={getattr(parsed, 'patient_id', None)} "
+                f"/ email={parsed.patient_email} / phone={parsed.patient_phone}. "
+                "Please store the patient first."
             )
         print(f"  [~] Found patient    id={patient.id}  name={patient.full_name}")
 
@@ -119,6 +121,8 @@ def store_parsed_prescription(parsed: ParsedPrescription) -> dict:
                     query = query.filter(RecurrenceType.every_n_days == r.every_n_days)
                 if r.cycle_take_days is not None:
                     query = query.filter(RecurrenceType.cycle_take_days == r.cycle_take_days)
+                if r.cycle_skip_days is not None:
+                    query = query.filter(RecurrenceType.cycle_skip_days == r.cycle_skip_days)
                 existing_rec = query.first()
 
                 if existing_rec:
@@ -199,32 +203,30 @@ def store_parsed_prescription(parsed: ParsedPrescription) -> dict:
 # Public pipeline entry-point
 # ---------------------------------------------------------------------------
 
-def process_prescription_pdf(pdf_path: str) -> dict:
+def process_prescription_pdf(pdf_path: str, patient_id: int) -> dict:
     """
-    Full pipeline: extract → parse → LLM validate → store.
+    Full pipeline: extract → parse with LLM → store.
 
     Parameters
     ----------
     pdf_path : str
         Path to the prescription PDF file.
+    patient_id : int
+        ID of the patient (provided manually, not extracted from PDF).
 
     Returns
     -------
     dict with ``patient_id``, ``doctor_id``, ``medications_inserted``,
     ``schedules_inserted``.
     """
-    print("Step 1/3  Extracting raw text …")
-    raw_text = extract_raw_text(pdf_path)
-
-    print("Step 2/3  Stage-1 regex parse …")
+    print("Step 1/2  Extracting with LLM (unified chunked extraction) …")
     parsed = parse_prescription_pdf(pdf_path)
+    
+    # Set patient_id (not extracted from PDF)
+    parsed.patient_id = patient_id
     print(f"          Found {len(parsed.medications)} medications")
 
-    print("Step 3/3  Stage-2 LLM validation (Groq) …")
-    parsed = validate_prescription(raw_text, parsed)
-    print(f"          After LLM: {len(parsed.medications)} medications")
-
-    print("Storing to DB …")
+    print("Step 2/2  Storing to DB …")
     return store_parsed_prescription(parsed)
 
 

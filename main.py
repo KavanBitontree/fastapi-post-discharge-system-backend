@@ -5,6 +5,8 @@ from core.database import engine
 from core.config import settings  # noqa: F401 — also sets LangSmith os.environ vars
 from fastapi.middleware.cors import CORSMiddleware
 from routes.report_routes import router as report_router
+from routes.bill_routes import router as bill_router
+from routes.prescription_routes import router as prescription_router
 
 app = FastAPI(
     title="Medicare Post-Discharge System API",
@@ -28,8 +30,10 @@ router = APIRouter()
 fsd.install(router)
 app.include_router(router)
 
-# Include report routes
+# Include routes
 app.include_router(report_router)
+app.include_router(bill_router)
+app.include_router(prescription_router)
 
 
 @app.get("/")

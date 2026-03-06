@@ -1,288 +1,289 @@
 """
-LLM Prescription Validator  —  LangChain/Groq-backed gap-filler
-------------------------------------------------------
-Takes the raw PDF text and the Stage-1 :class:`ParsedPrescription` from
-``parsers.prescription_parser`` and asks the LLM to fill every ``None`` field,
-handle synonym labels, and parse free-text medication instructions like
-"take 1 paracetamol after lunch for 12 days".
-
-Usage::
-
-    from parsers.prescription_parser import parse_prescription_pdf, extract_raw_text
-    from llm_validators.llm_prescription_validator import validate_prescription
-
-    raw   = extract_raw_text("rx.pdf")
-    rough = parse_prescription_pdf("rx.pdf")
-    final = validate_prescription(raw, rough)    # ParsedPrescription, all fields populated
+LLM Prescription Validator (Chunked)
+-------------------------------------
+Simplified prescription extraction with chunking support.
 """
 
-import json
-from datetime import date, datetime
-from typing import Optional
+from typing import Optional, List
+from datetime import date
 
-from langsmith import traceable
-from langchain_core.messages import SystemMessage, HumanMessage
-
-from core.config import settings  # noqa: F401 — sets LangSmith os.environ vars
-from core.llm_init import llm
-from parsers.prescription_parser import (
+from core.txt_to_txt_llm_init import llm
+from services.parsers.prescription_parser import (
     ParsedPrescription,
     MedicationData,
     RecurrenceData,
     ScheduleData,
 )
 from core.enums import MedicineForm
-
-# LLM bound to JSON mode — guarantees the response is a JSON object
-_json_llm = llm.bind(response_format={"type": "json_object"})
-
-
-def _parse_json(content: str) -> dict:
-    """Strip optional markdown code fences then parse JSON."""
-    content = content.strip()
-    if content.startswith("```"):
-        content = content.split("\n", 1)[-1]
-        content = content.rsplit("```", 1)[0]
-    return json.loads(content.strip())
-
-# ---------------------------------------------------------------------------
-# Prompt builders
-# ---------------------------------------------------------------------------
+from schemas.prescription_schemas import (
+    MedicationSchedule,
+    MedicationRecurrence,
+    Medication,
+    PrescriptionHeader,
+    ValidatedPrescription,
+)
 
 
-_SYSTEM_PROMPT = """You are a clinical pharmacist and medical-data extraction specialist.
-You are given raw text from a hospital prescription PDF and a partial JSON object that
-a regex parser already extracted.  Your task is to return a COMPLETE JSON object by:
+# ── Prompts ────────────────────────────────────────────────────────────────────
 
-1. Filling every null / missing field by reading the raw text.
-2. Resolving common label synonyms:
-   - "Patient" can also appear as: Victim, Client, Member, Beneficiary, Insured, Patient Name
-   - "Doctor" can also appear as: Prescribing Physician, Physician, Prescriber, Consulting Doctor, Attending Physician
-   - "Prescription #" can also appear as: Rx No, Rx #, Ref #, Prescription Number, Script No
-   - "Prescription Date" can also appear as: Rx Date, Date Issued, Date of Prescription, Issue Date
-   - "Speciality" / "Specialty" can also appear as: Department, Specialization, Field
-3. Parsing FREE-TEXT medication instructions such as:
-   "take 1 paracetamol after lunch for 12 days"
-   → drug_name: Paracetamol, dosage: "1 tab", after_lunch: true, dosing_days: 12, form: "tablet"
-4. Mapping timing to schedule booleans:
-   - "before breakfast" / "empty stomach" / "fasting" → before_breakfast: true
-   - "after breakfast" / "with breakfast"              → after_breakfast: true
-   - "before lunch"                                    → before_lunch: true
-   - "after lunch" / "with lunch"                      → after_lunch: true
-   - "before dinner"                                   → before_dinner: true
-   - "after dinner" / "with dinner" / "bedtime" / "before bed" / "before sleep" / "at night" / "before bedtime" → after_dinner: true
-5. Inferring form_of_medicine from drug name / free text if not stated.
-   ONLY use one of: tablet, capsule, syrup, injection, drops, cream, ointment, inhaler, powder, other
-6. Inferring recurrence from instructions:
-   - "daily" / "every day" / "once a day" etc.  → type: "daily"
-   - "every N days"                              → type: "every_n_days", every_n_days: N
-   - "Mon-Fri" / "weekdays" / "5 days a week"   → type: "cyclic", cycle_take_days: 5, cycle_skip_days: 2
-   - default to "daily" when unclear
-7. Setting any field to null if you genuinely cannot find the information.
+_SYSTEM_PROMPT = """You are a prescription data extraction system.
+Extract structured data from medical prescriptions and return it in JSON format.
 
-Return ONLY the JSON object described below — no markdown, no explanation.
+HEADER FIELDS:
+- rx_number: Prescription number
+- rx_date: Prescription date in YYYY-MM-DD format
+- patient_phone: Patient phone number
+- doctor_name: Prescribing doctor name
+- doctor_email: Doctor email
+- doctor_speciality: Doctor specialization
 
-JSON schema:
-{
-  "rx_number":        "string or null",
-  "rx_date":          "YYYY-MM-DD or null",
-  "patient_email":    "string or null",
-  "patient_phone":    "string or null",
-  "doctor_name":      "string or null",
-  "doctor_email":     "string or null",
-  "doctor_speciality": "string or null",
-  "medications": [
-    {
-      "drug_name":                   "string",
-      "strength":                    "string or null",
-      "form_of_medicine":            "tablet|capsule|syrup|injection|drops|cream|ointment|inhaler|powder|other",
-      "dosage":                      "string (e.g. '1 tab', '5ml', '2 puffs')",
-      "frequency_of_dose_per_day":   integer (>=1),
-      "dosing_days":                 integer or null,
-      "prescription_date":           "YYYY-MM-DD or null",
-      "recurrence": {
-        "type":                      "daily|every_n_days|cyclic",
-        "every_n_days":              integer or null,
-        "start_date_for_every_n_days": "YYYY-MM-DD or null",
-        "cycle_take_days":           integer or null,
-        "cycle_skip_days":           integer or null
-      },
-      "schedule": {
-        "before_breakfast": boolean,
-        "after_breakfast":  boolean,
-        "before_lunch":     boolean,
-        "after_lunch":      boolean,
-        "before_dinner":    boolean,
-        "after_dinner":     boolean
-      }
-    }
-  ]
-}
-"""
+MEDICATIONS - Extract EVERY medication with:
+- drug_name: Medication name (REQUIRED)
+- strength: Dose with unit (e.g., "5 mg", "10 mg")
+- form_of_medicine: tablet, capsule, syrup, injection, drops, cream, ointment, inhaler, powder, other
+- dosage: Amount per dose (e.g., "1", "2")
+- frequency_of_dose_per_day: Number of times per day (count all timings)
+- dosing_days: Duration in days
+- prescription_date: Date in YYYY-MM-DD format
+
+RECURRENCE:
+- type: "daily" (default), "every_n_days", or "cyclic"
+- For "Alternate" or "Every 2 Days": type="every_n_days", every_n_days=2
+- For "Mon–Fri Only": type="cyclic", cycle_take_days=5, cycle_skip_days=2
+
+SCHEDULE (set true when mentioned):
+- before_breakfast, after_breakfast, before_lunch, after_lunch, before_dinner, after_dinner
+- "After Lunch After Dinner" → after_lunch=true, after_dinner=true, frequency=2
+- "Before Bedtime" → after_dinner=true
+
+CRITICAL: Extract ALL medications. Do not skip any."""
 
 
-def _parsed_to_hint(parsed: ParsedPrescription) -> dict:
-    return {
-        "rx_number": parsed.rx_number,
-        "rx_date": str(parsed.rx_date) if parsed.rx_date else None,
-        "patient_email": parsed.patient_email,
-        "patient_phone": parsed.patient_phone,
-        "doctor_name": parsed.doctor_name,
-        "doctor_email": parsed.doctor_email,
-        "doctor_speciality": parsed.doctor_speciality,
-        "medications": [
-            {
-                "drug_name": m.drug_name,
-                "strength": m.strength,
-                "form_of_medicine": m.form_of_medicine.value if m.form_of_medicine else None,
-                "dosage": m.dosage,
-                "frequency_of_dose_per_day": m.frequency_of_dose_per_day,
-                "dosing_days": m.dosing_days,
-                "prescription_date": str(m.prescription_date) if m.prescription_date else None,
-                "recurrence": {
-                    "type": m.recurrence.type,
-                    "every_n_days": m.recurrence.every_n_days,
-                    "start_date_for_every_n_days": str(m.recurrence.start_date_for_every_n_days)
-                    if m.recurrence.start_date_for_every_n_days else None,
-                    "cycle_take_days": m.recurrence.cycle_take_days,
-                    "cycle_skip_days": m.recurrence.cycle_skip_days,
-                },
-                "schedule": {
-                    "before_breakfast": m.schedule.before_breakfast,
-                    "after_breakfast": m.schedule.after_breakfast,
-                    "before_lunch": m.schedule.before_lunch,
-                    "after_lunch": m.schedule.after_lunch,
-                    "before_dinner": m.schedule.before_dinner,
-                    "after_dinner": m.schedule.after_dinner,
-                },
-            }
-            for m in parsed.medications
-        ],
-    }
+def extract_prescription_from_chunk(
+    text_chunk: str,
+    chunk_index: int,
+    total_chunks: int,
+) -> ValidatedPrescription:
+    """
+    Extract prescription data from a text chunk.
+    """
+    # Use temperature=0 for more deterministic structured output
+    from core.txt_to_txt_llm_init import llm as base_llm
+    deterministic_llm = base_llm.bind(temperature=0)
+    structured_llm = deterministic_llm.with_structured_output(ValidatedPrescription)
+    
+    if chunk_index == 0:
+        prompt = f"""Extract the complete header and all medications from this prescription.
+
+This is chunk 1 of {total_chunks}.
+
+{text_chunk}
+
+Return complete header information and all medications found in this chunk."""
+    else:
+        prompt = f"""Extract ONLY medications from this prescription chunk. Use minimal header.
+
+This is chunk {chunk_index + 1} of {total_chunks}.
+
+{text_chunk}
+
+Return a ValidatedPrescription with minimal header (rx_number="Chunk {chunk_index + 1}") and all medications from this chunk."""
+    
+    messages = [
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
+    ]
+    
+    try:
+        result = structured_llm.invoke(messages)
+        print(f"[llm] Chunk {chunk_index + 1}: extracted {len(result.medications)} medications")
+        return result
+    except Exception as e:
+        error_msg = str(e)
+        print(f"[llm] Chunk {chunk_index + 1}: extraction failed, attempting recovery")
+        
+        # Try to recover from markdown-wrapped JSON or failed generation
+        if "failed_generation" in error_msg or "tool_use_failed" in error_msg:
+            try:
+                import re
+                import json
+                
+                # Extract the failed generation using multiple patterns
+                patterns = [
+                    r"'failed_generation': '(.+?)'(?:,|})",
+                    r'"failed_generation": "(.+?)"(?:,|})',
+                    r"'failed_generation':\s*'(.+)'",
+                    r'"failed_generation":\s*"(.+)"',
+                ]
+                
+                partial_json = None
+                for pattern in patterns:
+                    match = re.search(pattern, error_msg, re.DOTALL)
+                    if match:
+                        partial_json = match.group(1)
+                        break
+                
+                if partial_json:
+                    # Clean up escape sequences
+                    partial_json = partial_json.replace("\\n", "\n").replace('\\"', '"').replace("\\'", "'")
+                    
+                    print(f"[llm] Attempting to parse: {partial_json[:100]}...")
+                    
+                    # Check if LLM returned markdown text instead of JSON
+                    if partial_json.startswith("**") or partial_json.startswith("##"):
+                        print(f"[llm] LLM returned markdown text instead of JSON - cannot recover")
+                        raise ValueError("LLM returned markdown text instead of structured JSON")
+                    
+                    # Remove markdown code fences if present
+                    if partial_json.startswith("```json"):
+                        partial_json = partial_json.split("\n", 1)[1] if "\n" in partial_json else partial_json
+                    if partial_json.startswith("```"):
+                        partial_json = partial_json.split("\n", 1)[1] if "\n" in partial_json else partial_json
+                    if "```" in partial_json:
+                        partial_json = partial_json.split("```")[0]
+                    
+                    # Check if it's wrapped in Groq's tool call format
+                    if '"name": "ValidatedPrescription"' in partial_json or "'name': 'ValidatedPrescription'" in partial_json:
+                        # Extract the arguments object
+                        args_match = re.search(r'"arguments":\s*({.+)', partial_json, re.DOTALL)
+                        if args_match:
+                            partial_json = args_match.group(1)
+                            print("[llm] Extracted arguments from Groq tool call wrapper")
+                    
+                    # Try to parse as JSON
+                    try:
+                        data = json.loads(partial_json.strip())
+                        
+                        # Convert to ValidatedPrescription
+                        header = PrescriptionHeader(**data.get("header", {}))
+                        medications = [Medication(**m) for m in data.get("medications", [])]
+                        
+                        result = ValidatedPrescription(header=header, medications=medications)
+                        print(f"[llm] Chunk {chunk_index + 1}: recovered {len(result.medications)} medications")
+                        return result
+                    except (json.JSONDecodeError, KeyError, TypeError) as parse_err:
+                        print(f"[llm] JSON recovery failed: {parse_err}")
+            except Exception as recovery_err:
+                print(f"[llm] Recovery failed: {recovery_err}")
+        
+        print(f"[llm] Chunk {chunk_index + 1}: returning empty result - {error_msg[:200]}")
+        # Return minimal valid result instead of failing
+        return ValidatedPrescription(
+            header=PrescriptionHeader(
+                rx_number=f"Chunk {chunk_index + 1}" if chunk_index > 0 else None
+            ),
+            medications=[],
+        )
 
 
-def _user_prompt(raw_text: str, parsed: ParsedPrescription) -> str:
-    return (
-        "=== RAW PDF TEXT ===\n"
-        + raw_text
-        + "\n\n=== PARTIAL PARSE (fill in the nulls / improve accuracy) ===\n"
-        + json.dumps(_parsed_to_hint(parsed), indent=2)
-    )
+def merge_prescription_results(results: List[Optional[ValidatedPrescription]]) -> ParsedPrescription:
+    """
+    Merge results from multiple chunks into a single ParsedPrescription.
+    """
+    valid_results = [r for r in results if r is not None]
+    
+    if not valid_results:
+        raise ValueError("No valid results to merge")
+    
+    first = valid_results[0]
+    
+    # Combine all medications
+    all_meds = []
+    for result in valid_results:
+        all_meds.extend(result.medications)
+    
+    print(f"[llm] Merged {len(valid_results)} chunks: {len(all_meds)} total medications")
+    
+    # Convert to ParsedPrescription format
+    def _to_date(val) -> Optional[date]:
+        if not val:
+            return None
+        try:
+            from datetime import datetime
+            return datetime.strptime(str(val), "%Y-%m-%d").date()
+        except ValueError:
+            return None
+    
+    def _to_form(val: str) -> MedicineForm:
+        mapping = {
+            "tablet": MedicineForm.TABLET,
+            "capsule": MedicineForm.CAPSULE,
+            "syrup": MedicineForm.SYRUP,
+            "injection": MedicineForm.INJECTION,
+            "drops": MedicineForm.DROPS,
+            "cream": MedicineForm.CREAM,
+            "ointment": MedicineForm.OINTMENT,
+            "inhaler": MedicineForm.INHALER,
+            "powder": MedicineForm.POWDER,
+        }
+        return mapping.get((val or "").lower(), MedicineForm.OTHER)
+    
+    # Create ParsedPrescription (dataclass)
+    parsed = ParsedPrescription()
+    parsed.rx_number = first.header.rx_number
+    parsed.rx_date = _to_date(first.header.rx_date)
+    parsed.patient_phone = first.header.patient_phone
+    parsed.doctor_name = first.header.doctor_name
+    parsed.doctor_email = first.header.doctor_email
+    parsed.doctor_speciality = first.header.doctor_speciality
+    # patient_id and patient_email will be set by the route
+    
+    parsed.medications = [
+        MedicationData(
+            drug_name=med.drug_name,
+            strength=med.strength,
+            form_of_medicine=_to_form(med.form_of_medicine),
+            dosage=med.dosage,
+            frequency_of_dose_per_day=med.frequency_of_dose_per_day,
+            dosing_days=med.dosing_days,
+            prescription_date=_to_date(med.prescription_date),
+            recurrence=RecurrenceData(
+                type=med.recurrence.type,
+                every_n_days=med.recurrence.every_n_days,
+                start_date_for_every_n_days=_to_date(med.recurrence.start_date_for_every_n_days),
+                cycle_take_days=med.recurrence.cycle_take_days,
+                cycle_skip_days=med.recurrence.cycle_skip_days,
+            ),
+            schedule=ScheduleData(
+                before_breakfast=med.schedule.before_breakfast,
+                after_breakfast=med.schedule.after_breakfast,
+                before_lunch=med.schedule.before_lunch,
+                after_lunch=med.schedule.after_lunch,
+                before_dinner=med.schedule.before_dinner,
+                after_dinner=med.schedule.after_dinner,
+            ),
+        )
+        for med in all_meds
+    ]
+    
+    print(f"[llm] Created ParsedPrescription with {len(parsed.medications)} medications")
+    print(f"[llm] Type check: {type(parsed).__name__}")
+    
+    return parsed
 
 
-# ---------------------------------------------------------------------------
-# Merge helpers
-# ---------------------------------------------------------------------------
-
-_VALID_FORMS = {f.value for f in MedicineForm}
+# Re-export for backward compatibility
+def validate_prescription(raw_pdf_text: str, parsed: ParsedPrescription) -> ParsedPrescription:
+    """
+    DEPRECATED: Legacy function for backward compatibility.
+    """
+    result = extract_prescription_from_chunk(raw_pdf_text, 0, 1)
+    
+    # Merge with existing
+    parsed.rx_number = result.header.rx_number or parsed.rx_number
+    parsed.rx_date = _to_date(result.header.rx_date) or parsed.rx_date
+    
+    if result.medications:
+        parsed.medications = merge_prescription_results([result]).medications
+    
+    return parsed
 
 
 def _to_date(val) -> Optional[date]:
     if not val:
         return None
     try:
+        from datetime import datetime
         return datetime.strptime(str(val), "%Y-%m-%d").date()
     except ValueError:
         return None
-
-
-def _to_form(val: str) -> MedicineForm:
-    if val and val.lower() in _VALID_FORMS:
-        return MedicineForm(val.lower())
-    return MedicineForm.OTHER
-
-
-def _build_medication(row: dict, rx_date: Optional[date]) -> MedicationData:
-    rec_raw = row.get("recurrence", {})
-    sch_raw = row.get("schedule", {})
-
-    recurrence = RecurrenceData(
-        type=rec_raw.get("type", "daily"),
-        every_n_days=rec_raw.get("every_n_days"),
-        start_date_for_every_n_days=_to_date(rec_raw.get("start_date_for_every_n_days")) or rx_date,
-        cycle_take_days=rec_raw.get("cycle_take_days"),
-        cycle_skip_days=rec_raw.get("cycle_skip_days"),
-    )
-
-    schedule = ScheduleData(
-        before_breakfast=bool(sch_raw.get("before_breakfast", False)),
-        after_breakfast=bool(sch_raw.get("after_breakfast", False)),
-        before_lunch=bool(sch_raw.get("before_lunch", False)),
-        after_lunch=bool(sch_raw.get("after_lunch", False)),
-        before_dinner=bool(sch_raw.get("before_dinner", False)),
-        after_dinner=bool(sch_raw.get("after_dinner", False)),
-    )
-
-    freq = row.get("frequency_of_dose_per_day") or sum([
-        schedule.before_breakfast, schedule.after_breakfast,
-        schedule.before_lunch, schedule.after_lunch,
-        schedule.before_dinner, schedule.after_dinner,
-    ]) or 1
-
-    return MedicationData(
-        drug_name=str(row.get("drug_name", "Unknown")),
-        strength=row.get("strength"),
-        form_of_medicine=_to_form(row.get("form_of_medicine", "")),
-        dosage=str(row.get("dosage", "1")),
-        frequency_of_dose_per_day=int(freq),
-        dosing_days=row.get("dosing_days"),
-        prescription_date=_to_date(row.get("prescription_date")) or rx_date,
-        recurrence=recurrence,
-        schedule=schedule,
-    )
-
-
-def _merge(original: ParsedPrescription, llm_data: dict) -> ParsedPrescription:
-    def pick(current, llm_val):
-        return current if current is not None else llm_val
-
-    original.rx_number = pick(original.rx_number, llm_data.get("rx_number"))
-    original.rx_date = pick(original.rx_date, _to_date(llm_data.get("rx_date")))
-    original.patient_email = pick(original.patient_email, llm_data.get("patient_email"))
-    original.patient_phone = pick(original.patient_phone, llm_data.get("patient_phone"))
-    original.doctor_name = pick(original.doctor_name, llm_data.get("doctor_name"))
-    original.doctor_email = pick(original.doctor_email, llm_data.get("doctor_email"))
-    original.doctor_speciality = pick(original.doctor_speciality, llm_data.get("doctor_speciality"))
-
-    llm_meds = llm_data.get("medications", [])
-    if llm_meds and len(llm_meds) >= len(original.medications):
-        original.medications = [_build_medication(m, original.rx_date) for m in llm_meds]
-    elif llm_meds:
-        for i, orig_med in enumerate(original.medications):
-            if i < len(llm_meds):
-                llm_med = llm_meds[i]
-                if orig_med.strength is None:
-                    orig_med.strength = llm_med.get("strength")
-                if orig_med.form_of_medicine == MedicineForm.OTHER:
-                    orig_med.form_of_medicine = _to_form(llm_med.get("form_of_medicine", ""))
-                if orig_med.dosing_days is None:
-                    orig_med.dosing_days = llm_med.get("dosing_days")
-                if orig_med.prescription_date is None:
-                    orig_med.prescription_date = _to_date(llm_med.get("prescription_date"))
-
-    return original
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-@traceable(name="validate_prescription", run_type="llm")
-def validate_prescription(raw_pdf_text: str, parsed: ParsedPrescription) -> ParsedPrescription:
-    """
-    Stage-2 LLM validation.
-
-    Sends *raw_pdf_text* plus the Stage-1 *parsed* result to the shared LLM
-    and merges the response back into *parsed*, filling any ``None`` fields
-    and resolving free-text medication instructions.
-
-    Returns the mutated :class:`ParsedPrescription` object (same instance).
-    """
-    messages = [
-        SystemMessage(content=_SYSTEM_PROMPT),
-        HumanMessage(content=_user_prompt(raw_pdf_text, parsed)),
-    ]
-
-    response = _json_llm.invoke(messages)
-    llm_data = _parse_json(response.content)
-    return _merge(parsed, llm_data)
