@@ -27,3 +27,4 @@ class Patient(Base):
     medications = relationship("Medication", back_populates="patient", cascade="all, delete-orphan")
     doctors = relationship("PatientDoctor", back_populates="patient", cascade="all, delete-orphan")
     refresh_tokens = relationship("RefreshToken", back_populates="patient", cascade="all, delete-orphan")
+    chat_history = relationship("ChatHistory", back_populates="patient", cascade="all, delete-orphan")

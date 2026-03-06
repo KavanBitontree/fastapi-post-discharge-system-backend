@@ -4,15 +4,14 @@ Bill Routes
 API endpoints for uploading and processing medical bill PDFs.
 """
 
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, status
+from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from pathlib import Path
+from typing import Optional
 import shutil
 from datetime import datetime
 
 from core.database import get_db
-from services.parsers.bill_parser import parse_bill_pdf, extract_raw_text
-from services.llm_validators.llm_bill_validator import validate_bill
 from models.patient import Patient
 from models.bill import Bill
 
@@ -22,25 +21,25 @@ router = APIRouter(prefix="/api/bills", tags=["Bills"])
 
 @router.post("/upload", status_code=status.HTTP_201_CREATED)
 async def upload_and_process_bill(
+    patient_id: int = Form(..., description="ID of the patient", example=1),
     file: UploadFile = File(..., description="PDF file of medical bill"),
-    use_llm: bool = True,
+    strategy: str = Form("auto", description="Extraction strategy: 'auto' (default), 'text', or 'vision'"),
     db: Session = Depends(get_db)
 ):
     """
     Upload a medical bill PDF and process it.
     
     **Workflow:**
-    1. Save PDF to `public/pdfs/`
-    2. Extract text from PDF
-    3. Parse with regex (Stage 1)
-    4. Validate with LLM (Stage 2, if enabled)
-    5. Look up patient by email
-    6. Check for duplicates
-    7. Store in database
+    1. Upload PDF to Cloudinary
+    2. Extract with LLM (auto-detects text vs scanned)
+    3. Look up patient by ID
+    4. Check for duplicates
+    5. Store in database
     
     **Parameters:**
+    - **patient_id**: ID of the patient (required)
     - **file**: PDF file to upload (required)
-    - **use_llm**: Use LLM for validation (default: true)
+    - **strategy**: 'auto' (default), 'text', or 'vision'
     
     **Returns:**
     - Bill ID
@@ -51,97 +50,105 @@ async def upload_and_process_bill(
     """
     
     # Validate file type
-    if not file.filename.endswith('.pdf'):
+    if not file.filename or not file.filename.lower().endswith('.pdf'):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only PDF files are allowed"
+            detail="Only PDF files are accepted"
         )
+    
+    pdf_path: Optional[Path] = None
+    cloudinary_public_id: Optional[str] = None
     
     try:
         # ═══════════════════════════════════════════════════════════════════
-        # STEP 1: Save PDF file
+        # STEP 1: Read PDF into memory
         # ═══════════════════════════════════════════════════════════════════
-        pdf_dir = Path("public/pdfs")
-        pdf_dir.mkdir(parents=True, exist_ok=True)
+        # Read the entire file into memory
+        pdf_content = await file.read()
+        file.file.seek(0)  # Reset file pointer for Cloudinary upload
         
-        # Generate unique filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        safe_filename = f"{timestamp}_{file.filename}"
-        pdf_path = pdf_dir / safe_filename
+        safe_filename = f"{timestamp}_{Path(file.filename).name}"
         
-        # Save file
-        with pdf_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        print(f"[bill] Read PDF into memory: {safe_filename} ({len(pdf_content)} bytes)")
+
+        # ═══════════════════════════════════════════════════════════════════
+        # STEP 2: Upload to Cloudinary (from memory)
+        # ═══════════════════════════════════════════════════════════════════
+        from services.storage.cloudinary_storage import upload_medical_pdf
+        from io import BytesIO
+        
+        try:
+            # Create BytesIO from content for Cloudinary
+            pdf_buffer = BytesIO(pdf_content)
+            cloudinary_result = upload_medical_pdf(
+                file=pdf_buffer,
+                filename=safe_filename,
+                document_type="bill",
+                patient_id=patient_id
+            )
+            
+            cloudinary_url = cloudinary_result["secure_url"]
+            cloudinary_public_id = cloudinary_result["public_id"]
+            
+            print(f"[bill] Uploaded to Cloudinary: {cloudinary_public_id}")
+        except Exception as cloud_err:
+            print(f"[bill] Cloudinary upload failed: {cloud_err}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to upload PDF to cloud storage: {str(cloud_err)}"
+            )
+
+        # ═══════════════════════════════════════════════════════════════════
+        # STEP 3: Extract with LLM (from memory)
+        # ═══════════════════════════════════════════════════════════════════
+        try:
+            # Create another BytesIO for extraction
+            from services.parsers.bill_parser import parse_bill_pdf_from_memory
+            pdf_buffer = BytesIO(pdf_content)
+            parsed = parse_bill_pdf_from_memory(pdf_buffer, safe_filename, strategy=strategy)
+            print(f"[bill] Extracted invoice: {parsed.bill.invoice_number}, {len(parsed.line_items)} items")
+        except Exception as parse_err:
+            print(f"[bill] Parsing failed: {parse_err}")
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Could not extract data from PDF: {str(parse_err)[:300]}"
+            )
         
         # ═══════════════════════════════════════════════════════════════════
-        # STEP 2: Extract text
-        # ═══════════════════════════════════════════════════════════════════
-        raw_text = extract_raw_text(str(pdf_path))
-        
-        # ═══════════════════════════════════════════════════════════════════
-        # STEP 3: Parse with regex (Stage 1)
-        # ═══════════════════════════════════════════════════════════════════
-        parsed = parse_bill_pdf(str(pdf_path))
-        
-        regex_results = {
-            "invoice_number": parsed.bill.invoice_number,
-            "patient_email": parsed.patient_email,
-            "line_items_count": len(parsed.line_items)
-        }
-        
-        # ═══════════════════════════════════════════════════════════════════
-        # STEP 4: Validate with LLM (Stage 2, if enabled)
-        # ═══════════════════════════════════════════════════════════════════
-        llm_used = False
-        if use_llm:
-            try:
-                parsed = validate_bill(raw_text, parsed)
-                llm_used = True
-            except Exception as e:
-                # LLM failed, use regex results
-                llm_used = False
-                print(f"LLM validation failed: {e}")
-        
-        # ═══════════════════════════════════════════════════════════════════
-        # STEP 5: Validate required fields
+        # STEP 4: Validate required fields
         # ═══════════════════════════════════════════════════════════════════
         if not parsed.bill.invoice_number:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Could not extract invoice number from PDF"
-            )
-        
-        if not parsed.patient_email:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Could not extract patient email from PDF"
             )
         
         if not parsed.bill.total_amount:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Could not extract total amount from PDF"
             )
         
         if len(parsed.line_items) == 0:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="No line items found in PDF"
             )
         
         # ═══════════════════════════════════════════════════════════════════
-        # STEP 6: Get patient
+        # STEP 5: Get patient
         # ═══════════════════════════════════════════════════════════════════
-        patient = db.query(Patient).filter(Patient.email == parsed.patient_email).first()
+        patient = db.query(Patient).filter(Patient.id == patient_id).first()
         
         if not patient:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Patient with email '{parsed.patient_email}' not found in database. Please create patient first."
+                detail=f"Patient with ID {patient_id} not found."
             )
         
         # ═══════════════════════════════════════════════════════════════════
-        # STEP 7: Check for duplicates
+        # STEP 6: Check for duplicates
         # ═══════════════════════════════════════════════════════════════════
         existing = db.query(Bill).filter(
             Bill.invoice_number == parsed.bill.invoice_number
@@ -154,7 +161,7 @@ async def upload_and_process_bill(
             )
         
         # ═══════════════════════════════════════════════════════════════════
-        # STEP 8: Store in database
+        # STEP 7: Store in database with Cloudinary URL
         # ═══════════════════════════════════════════════════════════════════
         from models.bill_description import BillDescription
         
@@ -167,7 +174,7 @@ async def upload_and_process_bill(
             discount_amount=parsed.bill.discount_amount or 0,
             tax_amount=parsed.bill.tax_amount or 0,
             total_amount=parsed.bill.total_amount,
-            bill_url=f"/public/pdfs/{safe_filename}",
+            bill_url=cloudinary_url,
         )
         db.add(bill)
         db.flush()
@@ -197,30 +204,30 @@ async def upload_and_process_bill(
                 "bill_id": bill.id,
                 "invoice_number": bill.invoice_number,
                 "patient_id": bill.patient_id,
-                "patient_email": parsed.patient_email,
+                "patient_email": patient.email,
                 "invoice_date": bill.invoice_date.isoformat() if bill.invoice_date else None,
                 "total_amount": str(bill.total_amount),
                 "line_items_count": len(parsed.line_items),
-                "pdf_path": f"/public/pdfs/{safe_filename}",
+                "cloudinary_url": cloudinary_url,
+                "cloudinary_public_id": cloudinary_public_id,
             },
             "processing": {
-                "llm_used": llm_used,
-                "regex_results": regex_results,
+                "extraction_strategy": strategy,
                 "file_size_bytes": pdf_path.stat().st_size,
             }
         }
         
     except HTTPException:
-        # Re-raise HTTP exceptions
         raise
     except Exception as e:
-        # Handle unexpected errors
+        print(f"[bill] Unexpected error: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error processing bill: {str(e)}"
         )
     finally:
         file.file.close()
+        # No temporary file cleanup needed - everything was in memory!
 
 
 @router.get("/test-services")
