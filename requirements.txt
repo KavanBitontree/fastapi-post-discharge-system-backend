@@ -1,2 +1,28 @@
 fastapi
 uvicorn
+sqlalchemy
+alembic
+psycopg2-binary
+pydantic
+pydantic-settings
+python-dotenv
+
+# PDF Processing
+pdfplumber
+pymupdf
+
+# LLM & AI
+langchain
+langchain-core
+langchain-groq
+langchain-huggingface
+huggingface_hub
+
+# Cloud Storage
+cloudinary
+
+# Image Processing
+pillow
+
+# Utilities
+tqdm

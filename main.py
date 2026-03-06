@@ -34,7 +34,10 @@ router = APIRouter()
 fsd.install(router)
 app.include_router(router)
 
-
+# Include routes
+app.include_router(report_router)
+app.include_router(bill_router)
+app.include_router(prescription_router)
 
 
 @app.get("/")
