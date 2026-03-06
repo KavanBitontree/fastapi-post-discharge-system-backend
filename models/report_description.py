@@ -18,7 +18,7 @@ class ReportDescription(Base):
     normal_result = Column(String(100), nullable=True)        # Value when within normal range
     abnormal_result = Column(String(100), nullable=True)      # Value when outside normal range
 
-    flag = Column(String(10), nullable=True)                  # "H" (High), "L" (Low), "**" (Critical)
+    flag = Column(String(50), nullable=True)                  # "H" (High), "L" (Low), "**" (Critical), or interpretation
 
     units = Column(String(100), nullable=True)                # e.g. "mmHg", "mg/dL", "bpm"
 
