@@ -26,7 +26,6 @@ class MedicineForm(str, Enum):
 
 class SessionStatus(str, Enum):
     """Telegram session status"""
-    NEW = "new"
     AWAIT_OTP = "await_otp"
     AWAIT_MOBILE = "await_mobile"
     VERIFIED = "verified"
