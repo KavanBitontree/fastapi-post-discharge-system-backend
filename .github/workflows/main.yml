@@ -1,13 +1,16 @@
-name: Test Cron
+name: Call FastAPI Cron
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 jobs:
   call-api:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Call API
-        run: curl https://fastapi-post-discharge-system-backe.vercel.app/
+      - name: Call FastAPI endpoint
+        run: |
+          echo "Calling API..."
+          curl -L --fail --show-error --verbose https://fastapi-post-discharge-system-backe.vercel.app/
