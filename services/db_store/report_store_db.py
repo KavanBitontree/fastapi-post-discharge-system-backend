@@ -1,138 +1,205 @@
 """
 report_store_db.py
 ------------------
-Database storage operations for medical reports.
-Handles patient lookup, duplicate checking, and data persistence.
+Stores validated report data to Neon DB.
+
+Design principles:
+  - Trusts LLM-extracted + Pydantic-validated values directly (no regex re-parsing).
+  - Pre-store validation guarantees data integrity before any DB write.
+  - Bulk-inserts all ReportDescription rows in a single transaction.
+  - All helpers are pure string/float operations - no regex.
 """
 
-from typing import Optional, Dict, List
-from sqlalchemy.orm import Session
 from datetime import datetime
+from typing import Optional, List
+
+from sqlalchemy.orm import Session
+
+from models.report import Report
+from models.report_description import ReportDescription
+from services.llm_validators.report_llm_validator import ExtractedReport, TestResult
 
 
-def get_patient_by_email(db: Session, email: str):
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+class ReportStoreError(ValueError):
+    """Raised when data fails pre-store validation."""
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Pre-store validation
+# ---------------------------------------------------------------------------
+
+def pre_store_validate(extracted: ExtractedReport) -> None:
     """
-    Look up a patient by email address.
-    
-    Parameters
-    ----------
-    db : Session
-        Database session
-    email : str
-        Patient email address
-        
-    Returns
-    -------
-    Patient or None
-        Patient object if found, None otherwise
+    Validate extracted report data before writing to DB.
+    Raises ReportStoreError with a descriptive message on failure.
+
+    Checks:
+      - header.report_name is present and non-empty
+      - at least one test result exists
+      - each result has test_name + at least one result value
     """
-    from models.patient import Patient
-    return db.query(Patient).filter(Patient.email == email).first()
+    h = extracted.header
+
+    if not h.report_name or not h.report_name.strip():
+        raise ReportStoreError("report_name is missing from the extracted report header.")
+
+    if not extracted.test_results:
+        raise ReportStoreError("No test results were extracted from this report.")
+
+    invalid_rows: List[str] = []
+    for i, t in enumerate(extracted.test_results):
+        if not t.test_name or not t.test_name.strip():
+            invalid_rows.append(f"Row {i}: empty test_name")
+        elif not t.normal_result and not t.abnormal_result:
+            invalid_rows.append(f"Row {i} ({t.test_name!r}): no result value")
+
+    if invalid_rows:
+        summary = "; ".join(invalid_rows[:5])
+        raise ReportStoreError(
+            f"{len(invalid_rows)} invalid row(s) in extracted report: {summary}"
+        )
 
 
-def check_duplicate_report(db: Session, patient_id: int, report_name: str, report_date: datetime) -> bool:
-    """
-    Check if a report already exists for this patient.
-    
-    Parameters
-    ----------
-    db : Session
-        Database session
-    patient_id : int
-        Patient ID
-    report_name : str
-        Report name/title
-    report_date : datetime
-        Report date
-        
-    Returns
-    -------
-    bool
-        True if duplicate exists, False otherwise
-    """
-    from models.report import Report
-    
-    existing = db.query(Report).filter(
-        Report.patient_id == patient_id,
-        Report.report_name == report_name,
-        Report.report_date == report_date
-    ).first()
-    
-    return existing is not None
+# ---------------------------------------------------------------------------
+# Duplicate check
+# ---------------------------------------------------------------------------
 
+def check_duplicate_report(
+    db: Session,
+    patient_id: int,
+    report_name: str,
+    report_date: Optional[str],
+) -> bool:
+    """Return True if this exact report already exists for the patient."""
+    from models.report import Report as ReportModel
+
+    query = db.query(ReportModel).filter(
+        ReportModel.patient_id  == patient_id,
+        ReportModel.report_name == report_name,
+    )
+    if report_date:
+        parsed = _parse_iso_date(report_date)
+        if parsed:
+            query = query.filter(ReportModel.report_date == parsed)
+
+    return query.first() is not None
+
+
+# ---------------------------------------------------------------------------
+# Main store function
+# ---------------------------------------------------------------------------
 
 def store_report(
     db: Session,
-    header: Dict,
-    rows: List[Dict],
+    extracted: ExtractedReport,
     patient_id: int,
-    report_url: Optional[str] = None,
-):
+    report_url: str,
+) -> Report:
     """
-    Store report and test results in database.
-    
+    Persist a validated report to Neon DB.
+
+    Creates one Report row + bulk-inserts all ReportDescription rows
+    in a single transaction.
+
+    The LLM + Pydantic validators already normalised every field:
+      - flag         -> None / "H" / "L" / "**"
+      - units        -> clean unit string or None
+      - ref_low/high -> plain numeric string or None
+      - normal/abnormal -> correctly assigned based on flag
+
     Parameters
     ----------
-    db : Session
-        Database session
-    header : dict
-        Report header data
-    rows : list of dict
-        Test results data
-    patient_id : int
-        Patient ID
-    report_url : str, optional
-        URL to stored PDF file
-        
+    db          : SQLAlchemy session
+    extracted   : ExtractedReport already passed through validate_extracted_report()
+    patient_id  : patient this report belongs to
+    report_url  : path/URL to the stored PDF
+
     Returns
     -------
-    Report
-        Created Report object with populated ID
-        
-    Raises
-    ------
-    ValueError
-        If required fields are missing
+    Report ORM object with id populated.
     """
-    from models.report import Report
-    from models.report_description import ReportDescription
-    
-    # Validate required fields
-    if not header.get("report_name"):
-        raise ValueError("report_name is required but not found in header")
-    
-    # Create Report
+    h = extracted.header
+
     report = Report(
-        patient_id=patient_id,
-        report_name=header.get("report_name"),
-        report_date=header.get("report_date"),
-        collection_date=header.get("collection_date"),
-        received_date=header.get("received_date"),
-        specimen_type=header.get("specimen_type"),
-        status=header.get("status"),
-        report_url=report_url,
+        patient_id      = patient_id,
+        report_name     = _safe_str(h.report_name) or "Unknown Report",
+        report_date     = _parse_iso_date(h.report_date),
+        collection_date = _parse_iso_date(h.collection_date),
+        received_date   = _parse_iso_date(h.received_date),
+        specimen_type   = _safe_str(h.specimen_type),
+        status          = _safe_str(h.status),
+        report_url      = report_url,
     )
     db.add(report)
-    db.flush()  # Get report.id
-    
-    # Create ReportDescription rows
-    descriptions = [
-        ReportDescription(
-            report_id=report.id,
-            patient_id=patient_id,
-            test_name=row["test_name"],
-            section=row.get("section"),
-            normal_result=row.get("normal_result"),
-            abnormal_result=row.get("abnormal_result"),
-            flag=row.get("flag"),
-            units=row.get("units"),
-            reference_range_low=row.get("reference_range_low"),
-            reference_range_high=row.get("reference_range_high"),
+    db.flush()  # Populate report.id before bulk insert
+
+    descriptions = []
+    for t in extracted.test_results:
+        descriptions.append(
+            ReportDescription(
+                report_id            = report.id,
+                patient_id           = patient_id,
+                test_name            = _safe_str(t.test_name),
+                section              = _safe_str(t.section),
+                normal_result        = _safe_str(t.normal_result),
+                abnormal_result      = _safe_str(t.abnormal_result),
+                flag                 = _safe_str(t.flag),
+                units                = _safe_str(t.units),
+                reference_range_low  = _safe_numeric_str(t.reference_range_low),
+                reference_range_high = _safe_numeric_str(t.reference_range_high),
+            )
         )
-        for row in rows
-    ]
+
     db.bulk_save_objects(descriptions)
     db.commit()
     db.refresh(report)
-    
     return report
+
+
+# ---------------------------------------------------------------------------
+# Private helpers (no regex)
+# ---------------------------------------------------------------------------
+
+def _safe_str(value: Optional[str]) -> Optional[str]:
+    """Strip whitespace; return None for empty strings."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    return s if s else None
+
+
+def _safe_numeric_str(value: Optional[str]) -> Optional[str]:
+    """
+    Accept only a value that can be parsed as a float.
+    Strips whitespace. Returns None if not a valid number.
+    This guards against the LLM accidentally storing unit strings
+    in reference_range_low/high despite Pydantic validation.
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    try:
+        float(s)
+        return s
+    except ValueError:
+        return None
+
+
+def _parse_iso_date(value: Optional[str]) -> Optional[datetime]:
+    """Parse ISO 8601 string into datetime. Returns None on failure."""
+    if not value:
+        return None
+    s = str(value).strip()
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None

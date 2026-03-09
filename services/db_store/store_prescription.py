@@ -119,6 +119,8 @@ def store_parsed_prescription(parsed: ParsedPrescription) -> dict:
                     query = query.filter(RecurrenceType.every_n_days == r.every_n_days)
                 if r.cycle_take_days is not None:
                     query = query.filter(RecurrenceType.cycle_take_days == r.cycle_take_days)
+                if r.cycle_skip_days is not None:
+                    query = query.filter(RecurrenceType.cycle_skip_days == r.cycle_skip_days)
                 existing_rec = query.first()
 
                 if existing_rec:

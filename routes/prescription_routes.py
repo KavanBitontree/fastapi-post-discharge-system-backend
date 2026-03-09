@@ -152,7 +152,7 @@ async def test_services():
         from services.llm_validators.llm_prescription_validator import validate_prescription
         results["services"]["llm_prescription_validator"] = {
             "status": "OK",
-            "llm_model": "llama-3.3-70b-versatile",
+            "llm_model": "openai/gpt-oss-120b",
             "functions": ["validate_prescription"]
         }
     except Exception as e:
