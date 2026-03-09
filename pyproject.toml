@@ -28,4 +28,5 @@ dependencies = [
   "tqdm>=4.67.3",
   "uvicorn>=0.34.0",
   "pypdf>=6.7.5",
+  "twilio>=9.10.2",
 ]

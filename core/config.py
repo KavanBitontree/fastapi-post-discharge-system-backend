@@ -7,7 +7,7 @@ _ENV_FILE = os.path.join(os.path.dirname(__file__), "..", ".env")
 
 class Settings(BaseSettings):
     NEON_DB_URL: str
-    FRONTEND_URL: str = "http://localhost:5173"
+    FRONTEND_URL: str
     ENV: str = "development"
     CLOUD_NAME: str
     CLOUDINARY_API_KEY: str
@@ -37,12 +37,6 @@ settings = Settings()
 # Set environment variables for LangSmith tracing
 # See: https://docs.smith.langchain.com/observability/how_to_guides/trace_with_langgraph
 if settings.LANGSMITH_TRACING.lower() == "true":
-    os.environ["LANGCHAIN_TRACING_V2"] = "true"  # Updated key name
-    os.environ["LANGCHAIN_API_KEY"] = settings.LANGSMITH_API_KEY
-    os.environ["LANGCHAIN_PROJECT"] = settings.LANGSMITH_PROJECT
-    os.environ["LANGCHAIN_ENDPOINT"] = settings.LANGSMITH_ENDPOINT
-    
-    # Also set legacy keys for compatibility
     os.environ["LANGCHAIN_TRACING_V2"] = "true"  # Updated key name
     os.environ["LANGCHAIN_API_KEY"] = settings.LANGSMITH_API_KEY
     os.environ["LANGCHAIN_PROJECT"] = settings.LANGSMITH_PROJECT
