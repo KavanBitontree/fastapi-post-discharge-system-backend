@@ -5,11 +5,14 @@ requires-python = ">=3.10"
 dependencies = [
   "alembic>=1.18.4",
   "argon2-cffi>=25.1.0",
+  "apscheduler>=3.11.2",
   "cloudinary>=1.44.1",
   "fastapi>=0.121.0",
   "fastapi-swagger-dark>=0.0.9",
   "huggingface-hub>=1.5.0",
   "langchain-groq>=1.1.2",
+  "langchain-core>=0.3.0",
+  "langgraph>=0.2.0",
   "langsmith>=0.7.10",
   "passlib[bcrypt]>=1.7.4",
   "pdf2image>=1.17.0",
@@ -24,4 +27,5 @@ dependencies = [
   "sqlalchemy>=2.0.47",
   "tqdm>=4.67.3",
   "uvicorn>=0.34.0",
+  "pypdf>=6.7.5",
 ]

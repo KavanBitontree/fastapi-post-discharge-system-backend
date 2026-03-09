@@ -16,7 +16,7 @@ class TelegramSession(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=True)  # Nullable until verified
-    session_status = Column(SQLEnum(SessionStatus), nullable=False, default=SessionStatus.AWAIT_MOBILE)
+    session_status = Column(SQLEnum(SessionStatus), nullable=False, default=SessionStatus.AWAIT_MOBILE)  # Initial status awaiting mobile number
     telegram_id = Column(String, nullable=False, unique=True, index=True)  # Telegram user ID
     phone_number = Column(String, nullable=True)  # Phone number for verification
     otp = Column(String, nullable=True)  # One-time password

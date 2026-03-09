@@ -17,11 +17,15 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     CRON_SECRET: str
     GROQ_API_KEY: str
+    TELEGRAM_BOT_TOKEN: str
     HF_TOKEN: str  # HuggingFace token for image-to-text model
     LANGSMITH_TRACING: str
     LANGSMITH_API_KEY: str
     LANGSMITH_PROJECT: str
     LANGSMITH_ENDPOINT: str
+    TWILIO_ACCOUNT_SID: str
+    TWILIO_AUTH_TOKEN: str
+    TWILIO_FROM_NUMBER: str
 
     class Config:
         env_file = _ENV_FILE
@@ -33,6 +37,12 @@ settings = Settings()
 # Set environment variables for LangSmith tracing
 # See: https://docs.smith.langchain.com/observability/how_to_guides/trace_with_langgraph
 if settings.LANGSMITH_TRACING.lower() == "true":
+    os.environ["LANGCHAIN_TRACING_V2"] = "true"  # Updated key name
+    os.environ["LANGCHAIN_API_KEY"] = settings.LANGSMITH_API_KEY
+    os.environ["LANGCHAIN_PROJECT"] = settings.LANGSMITH_PROJECT
+    os.environ["LANGCHAIN_ENDPOINT"] = settings.LANGSMITH_ENDPOINT
+    
+    # Also set legacy keys for compatibility
     os.environ["LANGCHAIN_TRACING_V2"] = "true"  # Updated key name
     os.environ["LANGCHAIN_API_KEY"] = settings.LANGSMITH_API_KEY
     os.environ["LANGCHAIN_PROJECT"] = settings.LANGSMITH_PROJECT
