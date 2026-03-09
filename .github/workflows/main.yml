@@ -1,0 +1,12 @@
+name: Test Cron Every 1 Minute
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+
+jobs:
+  call-api:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call FastAPI endpoint
+        run: curl https://fastapi-post-discharge-system-backe.vercel.app/
