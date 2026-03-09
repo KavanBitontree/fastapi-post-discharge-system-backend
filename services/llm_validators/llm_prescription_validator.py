@@ -7,7 +7,7 @@ Simplified prescription extraction with chunking support.
 from typing import Optional, List
 from datetime import date
 
-from core.txt_to_txt_llm_init import llm
+from core.llm_init import llm
 from services.parsers.prescription_parser import (
     ParsedPrescription,
     MedicationData,
@@ -68,7 +68,7 @@ def extract_prescription_from_chunk(
     Extract prescription data from a text chunk.
     """
     # Use temperature=0 for more deterministic structured output
-    from core.txt_to_txt_llm_init import llm as base_llm
+    from core.llm_init import llm as base_llm
     deterministic_llm = base_llm.bind(temperature=0)
     structured_llm = deterministic_llm.with_structured_output(ValidatedPrescription)
     

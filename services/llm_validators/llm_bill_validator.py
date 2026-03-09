@@ -10,7 +10,7 @@ from typing import Optional, List
 from datetime import date
 from decimal import Decimal
 
-from core.txt_to_txt_llm_init import llm
+from core.llm_init import llm
 from services.parsers.bill_parser import ParsedBill, BillData, BillDescriptionItem
 from schemas.bill_schemas import BillLineItem, BillHeader, PatientInfo, ValidatedBill
 

@@ -10,7 +10,7 @@ Supports:
 """
 
 from typing import Optional, List, Dict
-from core.txt_to_txt_llm_init import llm
+from core.llm_init import llm
 from schemas.report_schemas import TestResult, ReportHeader, ValidatedReport
 
 
