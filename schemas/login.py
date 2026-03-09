@@ -6,6 +6,12 @@ class LoginRequest(BaseModel):
     email: EmailStr
     password: str
 
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+class LogoutRequest(BaseModel):
+    refresh_token: str
+
 # 3. Response Schema: This is what the backend sends back after login.
 class TokenResponse(BaseModel):
     access_token: str

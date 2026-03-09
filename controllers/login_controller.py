@@ -32,8 +32,8 @@ class LoginController:
             key="access_token",
             value=access_token,
             httponly=True,
-            samesite="lax",
-            secure=False, 
+            samesite="none",
+            secure=True, 
             max_age=900
         )
         
@@ -64,8 +64,8 @@ class LoginController:
             key="access_token",
             value=access_token,
             httponly=True,
-            samesite="lax",
-            secure=False,
+            samesite="none",
+            secure=True,
             max_age=900 
         )
         return {"message": "Token refreshed"}

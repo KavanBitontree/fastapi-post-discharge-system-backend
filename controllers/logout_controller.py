@@ -8,8 +8,8 @@ class LogoutController:
         response.delete_cookie(
             key="access_token",
             httponly=True,
-            samesite="lax",
-            secure=False  # Set to True in production (HTTPS)
+            samesite="none",
+            secure=True  # Set to True in production (HTTPS)
         )
 
         # 2. Invalidate the refresh token in the database

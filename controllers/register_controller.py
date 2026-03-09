@@ -25,8 +25,8 @@ class RegisterController:
             key="access_token",
             value=access_token,
             httponly=True,
-            samesite="lax",
-            secure=False, # True in Production
+            samesite="none",
+            secure=True, # True in Production
             max_age=900
         )
         db_refresh_token = RefreshToken(

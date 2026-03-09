@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Header, Response # Added Response
 from sqlalchemy.orm import Session
 from core.database import get_db
-from schemas.login import LoginRequest
+from schemas.login import LoginRequest, RefreshRequest
 from controllers.login_controller import LoginController
 
 router = APIRouter(prefix="/login", tags=["Authentication"])
@@ -11,7 +11,7 @@ def login(
     data: LoginRequest, 
     response: Response, 
     db: Session = Depends(get_db), 
-    user_agent: str = Header(None)
+    user_agent: str = Header(None, include_in_schema=False)
 ):
     """Handles patient/admin login and sets HttpOnly cookies"""
     
@@ -21,9 +21,9 @@ def login(
 
 @router.post("/refresh")
 def refresh_token(
-    data: dict, # Expecting {"refresh_token": "..."}
+    data: RefreshRequest,
     response: Response, 
     db: Session = Depends(get_db)
 ):
     # Pass to controller to verify the refresh token and set a new access cookie
-    return LoginController.process_refresh(db, data.get("refresh_token"), response)
+    return LoginController.process_refresh(db, data.refresh_token, response)
