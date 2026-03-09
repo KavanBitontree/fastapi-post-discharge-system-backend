@@ -12,5 +12,5 @@ jobs:
     steps:
       - name: Call FastAPI endpoint
         run: |
-          echo "Calling API..."
+          echo "Calling API at $(date)"
           curl -L --fail --show-error --verbose https://fastapi-post-discharge-system-backe.vercel.app/
