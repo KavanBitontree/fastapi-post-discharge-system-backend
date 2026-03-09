@@ -64,21 +64,33 @@ a regex parser already extracted.  Your task is to return a COMPLETE JSON object
 3. Parsing FREE-TEXT medication instructions such as:
    "take 1 paracetamol after lunch for 12 days"
    → drug_name: Paracetamol, dosage: "1 tab", after_lunch: true, dosing_days: 12, form: "tablet"
-4. Mapping timing to schedule booleans:
-   - "before breakfast" / "empty stomach" / "fasting" → before_breakfast: true
-   - "after breakfast" / "with breakfast"              → after_breakfast: true
-   - "before lunch"                                    → before_lunch: true
-   - "after lunch" / "with lunch"                      → after_lunch: true
-   - "before dinner"                                   → before_dinner: true
-   - "after dinner" / "with dinner" / "bedtime" / "before bed" / "before sleep" / "at night" / "before bedtime" → after_dinner: true
+4. Mapping timing to schedule booleans — CRITICAL RULES:
+   a. A medication can have MULTIPLE timing slots. Set ALL that apply to true.
+   b. When a prescription row lists multiple timings (e.g. "After Lunch / After Dinner"
+      or "After Breakfast\nAfter Dinner" or "After Lunch, After Dinner"
+      or "After Lunch\nAfter Dinner"), you MUST set EVERY mentioned slot to true.
+      Separators can be newline, slash (/), comma (,), or ampersand (&). Never drop any slot.
+   c. Timing → boolean mapping:
+      - "before breakfast" / "empty stomach" / "fasting"                              → before_breakfast: true
+      - "after breakfast" / "with breakfast"                                           → after_breakfast: true
+      - "before lunch"                                                                 → before_lunch: true
+      - "after lunch" / "with lunch"                                                   → after_lunch: true
+      - "before dinner"                                                                → before_dinner: true
+      - "after dinner" / "with dinner" / "bedtime" / "before bed" / "before sleep"
+        / "at night" / "before bedtime"                                                → after_dinner: true
+   d. Example: "After Lunch\nAfter Dinner" → after_lunch: true AND after_dinner: true
+      (both must be true — do NOT set only one of them)
 5. Inferring form_of_medicine from drug name / free text if not stated.
    ONLY use one of: tablet, capsule, syrup, injection, drops, cream, ointment, inhaler, powder, other
-6. Inferring recurrence from instructions:
+6. Setting frequency_of_dose_per_day = EXACT count of schedule boolean fields set to true.
+   Example: after_lunch=true AND after_dinner=true → frequency_of_dose_per_day MUST be 2.
+   Never set this to 1 if two or more schedule slots are true.
+7. Inferring recurrence from instructions:
    - "daily" / "every day" / "once a day" etc.  → type: "daily"
    - "every N days"                              → type: "every_n_days", every_n_days: N
    - "Mon-Fri" / "weekdays" / "5 days a week"   → type: "cyclic", cycle_take_days: 5, cycle_skip_days: 2
    - default to "daily" when unclear
-7. Setting any field to null if you genuinely cannot find the information.
+8. Setting any field to null if you genuinely cannot find the information.
 
 Return ONLY the JSON object described below — no markdown, no explanation.
 
@@ -213,11 +225,15 @@ def _build_medication(row: dict, rx_date: Optional[date]) -> MedicationData:
         after_dinner=bool(sch_raw.get("after_dinner", False)),
     )
 
-    freq = row.get("frequency_of_dose_per_day") or sum([
+    schedule_count = sum([
         schedule.before_breakfast, schedule.after_breakfast,
         schedule.before_lunch, schedule.after_lunch,
         schedule.before_dinner, schedule.after_dinner,
-    ]) or 1
+    ])
+    llm_freq = int(row.get("frequency_of_dose_per_day") or 0)
+    # Schedule slots are ground truth — use them when available,
+    # fall back to LLM value only when no slots are set.
+    freq = schedule_count if schedule_count > 0 else (llm_freq or 1)
 
     return MedicationData(
         drug_name=str(row.get("drug_name", "Unknown")),
@@ -246,7 +262,28 @@ def _merge(original: ParsedPrescription, llm_data: dict) -> ParsedPrescription:
 
     llm_meds = llm_data.get("medications", [])
     if llm_meds and len(llm_meds) >= len(original.medications):
-        original.medications = [_build_medication(m, original.rx_date) for m in llm_meds]
+        new_meds = []
+        for i, m in enumerate(llm_meds):
+            built = _build_medication(m, original.rx_date)
+            # OR Stage-1 schedule with LLM schedule — never drop a slot
+            # that the regex parser already correctly identified.
+            if i < len(original.medications):
+                orig_sch = original.medications[i].schedule
+                built.schedule.before_breakfast = built.schedule.before_breakfast or orig_sch.before_breakfast
+                built.schedule.after_breakfast  = built.schedule.after_breakfast  or orig_sch.after_breakfast
+                built.schedule.before_lunch     = built.schedule.before_lunch     or orig_sch.before_lunch
+                built.schedule.after_lunch      = built.schedule.after_lunch      or orig_sch.after_lunch
+                built.schedule.before_dinner    = built.schedule.before_dinner    or orig_sch.before_dinner
+                built.schedule.after_dinner     = built.schedule.after_dinner     or orig_sch.after_dinner
+                # Recompute freq from merged schedule
+                merged_count = sum([
+                    built.schedule.before_breakfast, built.schedule.after_breakfast,
+                    built.schedule.before_lunch,     built.schedule.after_lunch,
+                    built.schedule.before_dinner,    built.schedule.after_dinner,
+                ])
+                built.frequency_of_dose_per_day = merged_count or 1
+            new_meds.append(built)
+        original.medications = new_meds
     elif llm_meds:
         for i, orig_med in enumerate(original.medications):
             if i < len(llm_meds):
@@ -259,6 +296,30 @@ def _merge(original: ParsedPrescription, llm_data: dict) -> ParsedPrescription:
                     orig_med.dosing_days = llm_med.get("dosing_days")
                 if orig_med.prescription_date is None:
                     orig_med.prescription_date = _to_date(llm_med.get("prescription_date"))
+                # Always update schedule and freq from LLM, merged with Stage-1
+                sch_raw = llm_med.get("schedule", {})
+                orig_med.schedule.before_breakfast = orig_med.schedule.before_breakfast or bool(sch_raw.get("before_breakfast", False))
+                orig_med.schedule.after_breakfast  = orig_med.schedule.after_breakfast  or bool(sch_raw.get("after_breakfast",  False))
+                orig_med.schedule.before_lunch     = orig_med.schedule.before_lunch     or bool(sch_raw.get("before_lunch",     False))
+                orig_med.schedule.after_lunch      = orig_med.schedule.after_lunch      or bool(sch_raw.get("after_lunch",      False))
+                orig_med.schedule.before_dinner    = orig_med.schedule.before_dinner    or bool(sch_raw.get("before_dinner",    False))
+                orig_med.schedule.after_dinner     = orig_med.schedule.after_dinner     or bool(sch_raw.get("after_dinner",     False))
+                merged_count = sum([
+                    orig_med.schedule.before_breakfast, orig_med.schedule.after_breakfast,
+                    orig_med.schedule.before_lunch,     orig_med.schedule.after_lunch,
+                    orig_med.schedule.before_dinner,    orig_med.schedule.after_dinner,
+                ])
+                orig_med.frequency_of_dose_per_day = merged_count or 1
+                # Update recurrence if still default
+                rec_raw = llm_med.get("recurrence", {})
+                if rec_raw and orig_med.recurrence.type == "daily" and rec_raw.get("type") != "daily":
+                    orig_med.recurrence = RecurrenceData(
+                        type=rec_raw.get("type", "daily"),
+                        every_n_days=rec_raw.get("every_n_days"),
+                        start_date_for_every_n_days=_to_date(rec_raw.get("start_date_for_every_n_days")) or original.rx_date,
+                        cycle_take_days=rec_raw.get("cycle_take_days"),
+                        cycle_skip_days=rec_raw.get("cycle_skip_days"),
+                    )
 
     return original
 

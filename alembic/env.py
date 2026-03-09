@@ -7,11 +7,7 @@ from alembic import context
 
 from core.database import Base
 from core.config import settings
-from models.report import Report
-from models.report_description import ReportDescription
-from models.bill import Bill
-from models.bill_description import BillDescription
-from models.patient import Patient
+import models  # noqa: F401 — registers all mappers for autogenerate
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
