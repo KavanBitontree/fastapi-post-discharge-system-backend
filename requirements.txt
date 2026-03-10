@@ -10,6 +10,7 @@ python-dotenv
 # PDF Processing
 pdfplumber
 pymupdf
+reportlab
 
 # LLM & AI
 langchain
