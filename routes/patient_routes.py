@@ -5,6 +5,12 @@ from core.database import get_db
 from core.security import get_current_user
 from services.patient_profile_service import PatientProfileService
 from schemas.patient_schemas import PatientUpdateRequest
+from schemas.patient_profile_schemas import (
+    PatientProfileResponse,
+    PatientDashboardResponse,
+    PatientDischargeHistoryResponse,
+    PatientDischargeDocumentsResponse,
+)
 
 router = APIRouter(prefix="/patient", tags=["Patient Self-Service"])
 
@@ -18,7 +24,7 @@ def _get_patient_id(current_user: dict) -> int:
     return pid
 
 
-@router.get("/profile")
+@router.get("/profile", response_model=PatientProfileResponse)
 def get_profile(
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
@@ -30,7 +36,7 @@ def get_profile(
     return result
 
 
-@router.patch("/profile")
+@router.patch("/profile", response_model=PatientProfileResponse)
 def update_profile(
     data: PatientUpdateRequest,
     db: Session = Depends(get_db),
@@ -43,7 +49,7 @@ def update_profile(
     return result
 
 
-@router.get("/dashboard")
+@router.get("/dashboard", response_model=PatientDashboardResponse)
 def get_dashboard(
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
@@ -55,7 +61,7 @@ def get_dashboard(
     return result
 
 
-@router.get("/discharge-history")
+@router.get("/discharge-history", response_model=PatientDischargeHistoryResponse)
 def get_discharge_history(
     page: int = Query(1, ge=1),
     size: int = Query(10, ge=1, le=100),
@@ -67,7 +73,7 @@ def get_discharge_history(
     return PatientProfileService.get_discharge_history(db, patient_id, page, size, sort)
 
 
-@router.get("/discharge/{discharge_id}/documents")
+@router.get("/discharge/{discharge_id}/documents", response_model=PatientDischargeDocumentsResponse)
 def get_discharge_documents(
     discharge_id: int,
     db: Session = Depends(get_db),

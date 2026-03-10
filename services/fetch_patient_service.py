@@ -1,31 +1,71 @@
 from sqlalchemy.orm import Session
 from models.patient import Patient
 from models.discharge_history import DischargeHistory
-from sqlalchemy import func, or_, asc, desc 
+from sqlalchemy import func, or_, asc, desc
+
 
 class FetchPatientService:
     @staticmethod
-    def get_filtered_patients(db: Session, search: str = None, skip: int = 0, limit: int = 10, sort_order: str = "asc"):
-        """Fetches patients with optional search, pagination, and sorting"""
+    def get_filtered_patients(
+        db: Session,
+        search: str = None,
+        skip: int = 0,
+        limit: int = 10,
+        sort_order: str = "asc",
+    ):
+        """Fetches patients with optional search, pagination, and sorting."""
         query = db.query(Patient).filter(Patient.id != 0)
-        
+
         if search:
             search_param = f"%{search}%"
             query = query.filter(
                 or_(
                     Patient.full_name.ilike(search_param),
-                    Patient.email.ilike(search_param)
+                    Patient.email.ilike(search_param),
                 )
             )
 
-        # Sorting logic
         sort_col = func.lower(Patient.full_name)
-        query = query.order_by(desc(sort_col)) if sort_order == "desc" else query.order_by(asc(sort_col))
+        query = (
+            query.order_by(desc(sort_col))
+            if sort_order == "desc"
+            else query.order_by(asc(sort_col))
+        )
 
         total_count = query.count()
         patients = query.offset(skip).limit(limit).all()
 
-        return patients, total_count
+        # Build serialized list with discharge_date for each patient
+        result = []
+        for p in patients:
+            latest_discharge = (
+                db.query(DischargeHistory)
+                .filter(
+                    DischargeHistory.patient_id == p.id,
+                    DischargeHistory.status == "completed",
+                )
+                .order_by(desc(DischargeHistory.discharge_date))
+                .first()
+            )
+            result.append(
+                {
+                    "id": p.id,
+                    "full_name": p.full_name,
+                    "email": p.email,
+                    "phone_number": p.phone_number,
+                    "dob": str(p.dob) if p.dob else None,
+                    "gender": p.gender,
+                    "address": p.address,
+                    "is_active": p.is_active,
+                    "discharge_date": (
+                        str(latest_discharge.discharge_date)
+                        if latest_discharge and latest_discharge.discharge_date
+                        else None
+                    ),
+                }
+            )
+
+        return result, total_count
     
     @staticmethod
     def get_patient_by_id(db: Session, patient_id: int):

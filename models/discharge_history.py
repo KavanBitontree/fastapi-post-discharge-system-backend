@@ -17,6 +17,9 @@ class DischargeHistory(Base):
     processed_reports = Column(Integer, nullable=False, default=0)
     processed_bills = Column(Integer, nullable=False, default=0)
     processed_prescriptions = Column(Integer, nullable=False, default=0)
+    discharge_summary_url = Column(String, nullable=True)
+    patient_friendly_summary_url = Column(String, nullable=True)
+    insurance_ready_url = Column(String, nullable=True)
 
     # Relationships
     patient = relationship("Patient", back_populates="discharge_histories")

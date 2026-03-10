@@ -6,11 +6,16 @@ from datetime import date
 from core.database import get_db
 from core.security import require_admin
 from services.admin_service import AdminService
+from schemas.admin_schemas import (
+    DashboardStatsResponse,
+    DischargeHistoryResponse,
+    DischargeDocumentsResponse,
+)
 
 router = APIRouter(prefix="/admin", tags=["Admin Analytics"])
 
 
-@router.get("/dashboard")
+@router.get("/dashboard", response_model=DashboardStatsResponse)
 def get_dashboard(
     db: Session = Depends(get_db),
     admin: dict = Depends(require_admin),
@@ -18,7 +23,7 @@ def get_dashboard(
     return AdminService.get_dashboard_stats(db)
 
 
-@router.get("/discharge-history")
+@router.get("/discharge-history", response_model=DischargeHistoryResponse)
 def get_discharge_history(
     search: str = Query(None),
     page: int = Query(1, ge=1),
@@ -34,7 +39,7 @@ def get_discharge_history(
     )
 
 
-@router.get("/discharge/{discharge_id}/documents")
+@router.get("/discharge/{discharge_id}/documents", response_model=DischargeDocumentsResponse)
 def get_discharge_documents(
     discharge_id: int,
     db: Session = Depends(get_db),

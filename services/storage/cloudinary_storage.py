@@ -78,7 +78,7 @@ class CloudinaryStorage:
             result = cloudinary.uploader.upload(
                 file,
                 public_id=public_id,
-                resource_type="raw",  # For PDFs
+                resource_type="image",  # Cloudinary supports PDFs under 'image', serving them with correct application/pdf content-type
                 folder=cls.FOLDERS[document_type],
                 tags=[f"patient_{patient_id}", document_type, "medical_document"],
                 context=f"patient_id={patient_id}|document_type={document_type}|filename={filename}",
@@ -156,7 +156,7 @@ class CloudinaryStorage:
             raise Exception(f"Cloudinary upload failed: {str(e)}")
     
     @classmethod
-    def delete_file(cls, public_id: str, resource_type: str = "raw") -> dict:
+    def delete_file(cls, public_id: str, resource_type: str = "image") -> dict:
         """
         Delete file from Cloudinary.
         
@@ -165,7 +165,7 @@ class CloudinaryStorage:
         public_id : str
             Cloudinary public_id of the file
         resource_type : str
-            'raw' for PDFs, 'image' for images
+            'image' for PDFs and images (Cloudinary serves PDFs with correct content-type under 'image')
             
         Returns
         -------
@@ -178,8 +178,8 @@ class CloudinaryStorage:
         )
         return result
     
-    @classmethod
-    def get_file_url(cls, public_id: str, resource_type: str = "raw") -> str:
+@classmethod
+def get_file_url(cls, public_id: str, resource_type: str = "image") -> str:
         """
         Get secure URL for a file.
         
@@ -188,20 +188,14 @@ class CloudinaryStorage:
         public_id : str
             Cloudinary public_id
         resource_type : str
-            'raw' for PDFs, 'image' for images
-            
+            'image' for PDFs and images
+        
         Returns
         -------
         str
             Secure URL
         """
-        if resource_type == "image":
-            return cloudinary.CloudinaryImage(public_id).build_url(secure=True)
-        else:
-            return cloudinary.CloudinaryResource(public_id).build_url(
-                resource_type="raw",
-                secure=True
-            )
+        return cloudinary.CloudinaryImage(public_id).build_url(secure=True)
 
 
 # Convenience functions
@@ -225,6 +219,6 @@ def upload_medical_image(
     return CloudinaryStorage.upload_image(file, filename, document_type, patient_id)
 
 
-def delete_medical_file(public_id: str, resource_type: str = "raw") -> dict:
+def delete_medical_file(public_id: str, resource_type: str = "image") -> dict:
     """Delete medical file from Cloudinary."""
     return CloudinaryStorage.delete_file(public_id, resource_type)

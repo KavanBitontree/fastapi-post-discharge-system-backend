@@ -45,6 +45,7 @@ class PatientProfileService:
             "dob": str(patient.dob) if patient.dob else None,
             "gender": patient.gender,
             "address": patient.address,
+            "created_at": patient.created_at.isoformat() if patient.created_at else None,
         }
 
     @staticmethod
@@ -214,9 +215,7 @@ class PatientProfileService:
             "discharge_date": (
                 str(discharge.discharge_date) if discharge.discharge_date else None
             ),
-            "processed_reports": discharge.processed_reports,
-            "processed_bills": discharge.processed_bills,
-            "processed_prescriptions": discharge.processed_prescriptions,
+            "status": discharge.status,
             "reports": reports,
             "bills": bills,
             "medications": medications,

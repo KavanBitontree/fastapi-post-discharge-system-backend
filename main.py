@@ -81,6 +81,8 @@ app.include_router(reminder_router)   # ← new: /reminders/trigger
 app.include_router(chat_router)        # POST /chat
 app.include_router(cron_reminder_router)  # POST /cron/reminders
 app.include_router(discharge_router)      # POST /api/discharge/process
+app.include_router(admin_analytics_router)  # GET /admin/dashboard, /admin/discharge-history, /admin/discharge/{id}/documents
+app.include_router(patient_router)          # GET /patient/profile, PATCH /patient/profile, GET /patient/dashboard, etc.
 
 
 @app.get("/")
