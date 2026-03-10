@@ -12,7 +12,7 @@ import shutil
 from datetime import datetime
 
 from core.database import get_db
-from models.patient import Patient
+from models.discharge_history import DischargeHistory
 from models.bill import Bill
 
 
@@ -21,7 +21,7 @@ router = APIRouter(prefix="/api/bills", tags=["Bills"])
 
 @router.post("/upload", status_code=status.HTTP_201_CREATED)
 async def upload_and_process_bill(
-    patient_id: int = Form(..., description="ID of the patient"),
+    discharge_id: int = Form(..., description="ID of the discharge record"),
     file: UploadFile = File(..., description="PDF file of medical bill"),
     strategy: str = Form("auto", description="Extraction strategy: 'auto' (default), 'text', or 'vision'"),
     db: Session = Depends(get_db)
@@ -84,7 +84,7 @@ async def upload_and_process_bill(
                 file=pdf_buffer,
                 filename=safe_filename,
                 document_type="bill",
-                patient_id=patient_id
+                patient_id=db.query(DischargeHistory).filter(DischargeHistory.id == discharge_id).first().patient_id
             )
             
             cloudinary_url = cloudinary_result["secure_url"]
@@ -136,15 +136,16 @@ async def upload_and_process_bill(
             )
         
         # ═══════════════════════════════════════════════════════════════════
-        # STEP 5: Get patient
+        # STEP 5: Validate discharge and get patient
         # ═══════════════════════════════════════════════════════════════════
-        patient = db.query(Patient).filter(Patient.id == patient_id).first()
-        
-        if not patient:
+        discharge = db.query(DischargeHistory).filter(DischargeHistory.id == discharge_id).first()
+        if not discharge:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Patient with ID {patient_id} not found."
+                detail=f"Discharge id={discharge_id} not found."
             )
+        from models.patient import Patient
+        patient = db.query(Patient).filter(Patient.id == discharge.patient_id).first()
         
         # ═══════════════════════════════════════════════════════════════════
         # STEP 6: Check for duplicates
@@ -165,7 +166,7 @@ async def upload_and_process_bill(
         from models.bill_description import BillDescription
         
         bill = Bill(
-            patient_id=patient.id,
+            discharge_id=discharge_id,
             invoice_number=parsed.bill.invoice_number,
             invoice_date=parsed.bill.invoice_date,
             due_date=parsed.bill.due_date,
@@ -202,7 +203,7 @@ async def upload_and_process_bill(
             "data": {
                 "bill_id": bill.id,
                 "invoice_number": bill.invoice_number,
-                "patient_id": bill.patient_id,
+                "discharge_id": bill.discharge_id,
                 "patient_email": patient.email,
                 "invoice_date": bill.invoice_date.isoformat() if bill.invoice_date else None,
                 "total_amount": str(bill.total_amount),

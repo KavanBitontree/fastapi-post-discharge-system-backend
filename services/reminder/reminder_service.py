@@ -365,3 +365,137 @@ def run_reminder_for_slot(db: Session, slot: str) -> None:
                     update_schedule_after_send(db, sched, now)
 
     logger.info("\u2714 Slot '%s' done \u2014 %d patient(s) notified via Telegram", slot, sent_count)
+
+
+# ─── Single cron orchestrator (all slots, window-based) ──────────────────────
+
+def run_all_due_reminders(db: Session, window_minutes: int = 20) -> dict:
+    """
+    Called by a single external cron endpoint (POST /cron/reminders).
+
+    For every verified Telegram patient, collects all medications whose
+    next_notify_at falls within:
+        next_notify_at  <=  now  <=  next_notify_at + window_minutes
+
+    This ensures a late cron hit (e.g. 8:20 for an 8:00 notification) still
+    delivers the reminder, while stale notifications (older than the window)
+    are skipped to avoid confusing double-sends.
+    """
+    from models.telegram_session import TelegramSession
+    from core.enums import SessionStatus
+
+    now    = datetime.now(TIMEZONE)
+    window = timedelta(minutes=window_minutes)
+
+    logger.info(
+        "\u25b6 Cron reminder job \u2014 time=%s  window=%d min",
+        now.strftime("%H:%M"), window_minutes,
+    )
+
+    verified = (
+        db.query(TelegramSession)
+        .filter(TelegramSession.session_status == SessionStatus.VERIFIED)
+        .all()
+    )
+
+    if not verified:
+        logger.info("No verified Telegram patients \u2014 cron skipped")
+        return {"notified": 0, "skipped": 0}
+
+    pid_to_chat: dict[int, str] = {
+        s.patient_id: s.telegram_id
+        for s in verified
+        if s.patient_id
+    }
+
+    patients: list[Patient] = (
+        db.query(Patient)
+        .filter(
+            Patient.id.in_(list(pid_to_chat.keys())),
+            Patient.is_active == True,
+        )
+        .all()
+    )
+
+    # hour → schedule flag, e.g. 20 → "after_dinner"
+    hour_to_flag: dict[int, str] = {hour: flag for flag, _, hour in MEAL_SLOTS}
+
+    sent_count = 0
+    skip_count = 0
+
+    for patient in patients:
+        chat_id = pid_to_chat.get(patient.id)
+        if not chat_id:
+            continue
+
+        today = now.date()
+
+        meds: list[Medication] = (
+            db.query(Medication)
+            .options(
+                joinedload(Medication.schedule),
+                joinedload(Medication.recurrence),
+            )
+            .filter(
+                Medication.patient_id == patient.id,
+                Medication.is_active == True,
+            )
+            .all()
+        )
+
+        due: list[dict] = []
+
+        for med in meds:
+            if _dosing_complete(med, today):
+                continue
+            if not _is_active_today(med, today):
+                continue
+
+            sched = med.schedule
+            if not sched or sched.next_notify_at is None:
+                continue
+
+            nna = sched.next_notify_at
+            if nna.tzinfo is None:
+                nna = nna.replace(tzinfo=TIMEZONE)
+
+            # Window check: due in the past ≤ window_minutes ago
+            if not (nna <= now <= nna + window):
+                continue
+
+            # Map notify hour → slot flag
+            slot = hour_to_flag.get(nna.hour)
+            if not slot:
+                logger.warning(
+                    "med id=%s: next_notify_at hour=%d doesn't match any slot",
+                    med.id, nna.hour,
+                )
+                continue
+
+            # Confirm the slot flag is actually enabled on the schedule
+            if not getattr(sched, slot, False):
+                continue
+
+            due.append({"medication": med, "slot": slot})
+
+        if not due:
+            skip_count += 1
+            continue
+
+        message = build_telegram_message(patient, due, now)
+        success = send_telegram_message(chat_id, message)
+
+        if success:
+            sent_count += 1
+            for item in due:
+                s = item["medication"].schedule
+                if s:
+                    update_schedule_after_send(db, s, now)
+        else:
+            skip_count += 1
+
+    logger.info(
+        "\u2714 Cron reminder done \u2014 %d notified, %d skipped",
+        sent_count, skip_count,
+    )
+    return {"notified": sent_count, "skipped": skip_count}

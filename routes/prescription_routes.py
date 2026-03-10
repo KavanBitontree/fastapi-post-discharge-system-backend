@@ -12,6 +12,7 @@ import shutil
 from datetime import datetime
 
 from core.database import get_db
+from models.discharge_history import DischargeHistory
 
 
 router = APIRouter(prefix="/api/prescriptions", tags=["Prescriptions"])
@@ -19,7 +20,7 @@ router = APIRouter(prefix="/api/prescriptions", tags=["Prescriptions"])
 
 @router.post("/upload", status_code=status.HTTP_201_CREATED)
 async def upload_and_process_prescription(
-    patient_id: int = Form(..., description="ID of the patient"),
+    discharge_id: int = Form(..., description="ID of the discharge record"),
     file: UploadFile = File(..., description="PDF file of prescription"),
     strategy: str = Form("auto", description="Extraction strategy: 'auto' (default), 'text', or 'vision'"),
     db: Session = Depends(get_db)
@@ -83,7 +84,7 @@ async def upload_and_process_prescription(
                 file=pdf_buffer,
                 filename=safe_filename,
                 document_type="prescription",
-                patient_id=patient_id
+                patient_id=db.query(DischargeHistory).filter(DischargeHistory.id == discharge_id).first().patient_id
             )
             
             cloudinary_url = cloudinary_result["secure_url"]
@@ -127,20 +128,20 @@ async def upload_and_process_prescription(
         # ═══════════════════════════════════════════════════════════════════
         # STEP 5-6: Store in database
         # ═══════════════════════════════════════════════════════════════════
-        from services.db_store.store_prescription import store_parsed_prescription
-        
-        # Handle both ValidatedPrescription and ParsedPrescription
+        from services.db_store.store_prescription import store_prescription_for_discharge
+        from services.parsers.prescription_parser import ParsedPrescription, MedicationData, RecurrenceData, ScheduleData
+        from datetime import date
+
+        # Resolve patient_id via discharge
+        discharge = db.query(DischargeHistory).filter(DischargeHistory.id == discharge_id).first()
+        if not discharge:
+            raise HTTPException(status_code=404, detail=f"Discharge id={discharge_id} not found.")
+        patient_id = discharge.patient_id
+
+        # Normalise parsed result to ParsedPrescription
         if hasattr(parsed, 'patient_id'):
-            # It's a ParsedPrescription (dataclass)
             parsed.patient_id = patient_id
-            print(f"[prescription] Set patient_id={patient_id} on ParsedPrescription")
         else:
-            # It's a ValidatedPrescription (Pydantic) - convert to ParsedPrescription
-            print(f"[prescription] Converting ValidatedPrescription to ParsedPrescription")
-            from services.parsers.prescription_parser import ParsedPrescription, MedicationData, RecurrenceData, ScheduleData
-            from datetime import date
-            
-            # Convert medications
             medications = []
             for med in parsed.medications:
                 med_data = MedicationData(
@@ -168,22 +169,20 @@ async def upload_and_process_prescription(
                     )
                 )
                 medications.append(med_data)
-            
-            # Create ParsedPrescription
             parsed = ParsedPrescription(
                 rx_number=parsed.header.rx_number,
                 rx_date=parsed.header.rx_date,
-                patient_id=patient_id,  # Set here
-                patient_email=None,  # Not extracted from PDF
+                patient_id=patient_id,
+                patient_email=None,
                 patient_phone=parsed.header.patient_phone,
                 doctor_name=parsed.header.doctor_name,
                 doctor_email=parsed.header.doctor_email,
                 doctor_speciality=parsed.header.doctor_speciality,
                 medications=medications,
             )
-            print(f"[prescription] Converted to ParsedPrescription with patient_id={patient_id}")
-        
-        result = store_parsed_prescription(parsed)
+
+        result = store_prescription_for_discharge(db, parsed, discharge_id=discharge_id)
+        db.commit()
         
         # ═══════════════════════════════════════════════════════════════════
         # Return success response
@@ -192,8 +191,9 @@ async def upload_and_process_prescription(
             "success": True,
             "message": "Prescription processed and stored successfully",
             "data": {
-                "patient_id": result["patient_id"],
+                "patient_id": patient_id,
                 "doctor_id": result["doctor_id"],
+                "discharge_id": discharge_id,
                 "medications_inserted": result["medications_inserted"],
                 "schedules_inserted": result["schedules_inserted"],
                 "cloudinary_url": cloudinary_url,
