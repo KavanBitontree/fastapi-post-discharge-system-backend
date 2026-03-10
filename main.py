@@ -33,6 +33,8 @@ app = FastAPI(docs_url=None,
               swagger_ui_parameters={"persistAuthorization": True})
 from routes.reminder_routes import router as reminder_router   # ← new
 from routes.chat_routes import router as chat_router
+from routes.cron_reminder import router as cron_reminder_router
+from routes.discharge_routes import router as discharge_router
 
 
 @asynccontextmanager
@@ -75,6 +77,8 @@ app.include_router(bill_router)
 app.include_router(prescription_router)
 app.include_router(reminder_router)   # ← new: /reminders/trigger
 app.include_router(chat_router)        # POST /chat
+app.include_router(cron_reminder_router)  # POST /cron/reminders
+app.include_router(discharge_router)      # POST /api/discharge/process
 
 
 @app.get("/")

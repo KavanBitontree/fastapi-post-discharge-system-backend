@@ -8,7 +8,7 @@ class Bill(Base):
     __tablename__ = "bills"
 
     id = Column(Integer, primary_key=True, index=True)
-    patient_id = Column(Integer, ForeignKey("patients.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
+    discharge_id = Column(Integer, ForeignKey("discharge_history.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
     invoice_number = Column(String, unique=True, nullable=False)
     invoice_date = Column(Date, nullable=False)
     due_date = Column(Date, nullable=True)
@@ -20,5 +20,5 @@ class Bill(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     # Relationships
-    patient = relationship("Patient", back_populates="bills")
+    discharge = relationship("DischargeHistory", back_populates="bills")
     descriptions = relationship("BillDescription", back_populates="bill", cascade="all, delete-orphan")
