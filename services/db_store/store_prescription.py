@@ -16,6 +16,135 @@ import sys
 import os
 from typing import Optional
 
+from sqlalchemy.orm import Session
+
+from services.parsers.prescription_parser import parse_prescription_pdf, ParsedPrescription
+
+
+# ---------------------------------------------------------------------------
+# New: store prescription linked to a discharge record (used by discharge service)
+# ---------------------------------------------------------------------------
+
+def store_prescription_for_discharge(
+    db: Session,
+    parsed: ParsedPrescription,
+    discharge_id: int,
+) -> dict:
+    """
+    Persist a ParsedPrescription into the database, linked to a discharge record.
+
+    Does NOT open or commit the session — caller controls the transaction.
+    """
+    from models.doctor import Doctor
+    from models.patient_doctor import PatientDoctor
+    from models.recurrence_type import RecurrenceType
+    from models.medication import Medication
+    from models.medication_schedule import MedicationSchedule
+
+    # ── Find or create doctor ────────────────────────────────────────────
+    doctor = None
+    if parsed.doctor_email:
+        doctor = db.query(Doctor).filter(Doctor.email == parsed.doctor_email).first()
+    if doctor is None and parsed.doctor_name:
+        doctor = Doctor(
+            full_name=parsed.doctor_name,
+            email=parsed.doctor_email or f"unknown_{parsed.doctor_name.replace(' ', '_')}@hospital.org",
+            speciality=parsed.doctor_speciality,
+        )
+        db.add(doctor)
+        db.flush()
+
+    # ── Link discharge ↔ doctor ──────────────────────────────────────────
+    if doctor:
+        existing_link = db.query(PatientDoctor).filter(
+            PatientDoctor.discharge_id == discharge_id,
+            PatientDoctor.doctor_id == doctor.id,
+        ).first()
+        if not existing_link:
+            db.add(PatientDoctor(discharge_id=discharge_id, doctor_id=doctor.id))
+            db.flush()
+
+    # ── Medications ──────────────────────────────────────────────────────
+    med_count = 0
+    sched_count = 0
+    recurrence_cache: dict = {}
+
+    for med_data in parsed.medications:
+        r = med_data.recurrence
+        cache_key = (r.type, r.every_n_days, r.cycle_take_days, r.cycle_skip_days)
+
+        if cache_key not in recurrence_cache:
+            query = db.query(RecurrenceType).filter(RecurrenceType.type == r.type)
+            if r.every_n_days is not None:
+                query = query.filter(RecurrenceType.every_n_days == r.every_n_days)
+            if r.cycle_take_days is not None:
+                query = query.filter(RecurrenceType.cycle_take_days == r.cycle_take_days)
+            if r.cycle_skip_days is not None:
+                query = query.filter(RecurrenceType.cycle_skip_days == r.cycle_skip_days)
+            existing_rec = query.first()
+
+            if existing_rec:
+                recurrence_cache[cache_key] = existing_rec
+            else:
+                new_rec = RecurrenceType(
+                    type=r.type,
+                    every_n_days=r.every_n_days,
+                    start_date_for_every_n_days=r.start_date_for_every_n_days,
+                    cycle_take_days=r.cycle_take_days,
+                    cycle_skip_days=r.cycle_skip_days,
+                )
+                db.add(new_rec)
+                db.flush()
+                recurrence_cache[cache_key] = new_rec
+
+        recurrence_obj = recurrence_cache[cache_key]
+
+        # Skip duplicate: same discharge + drug + date
+        existing_med = db.query(Medication).filter(
+            Medication.discharge_id == discharge_id,
+            Medication.drug_name == med_data.drug_name,
+            Medication.prescription_date == med_data.prescription_date,
+        ).first()
+        if existing_med:
+            continue
+
+        med = Medication(
+            discharge_id=discharge_id,
+            drug_name=med_data.drug_name,
+            dosage=med_data.dosage,
+            frequency_of_dose_per_day=med_data.frequency_of_dose_per_day,
+            dosing_days=med_data.dosing_days,
+            recurrence_id=recurrence_obj.id,
+            is_active=True,
+            strength=med_data.strength,
+            form_of_medicine=med_data.form_of_medicine,
+            doctor_id=doctor.id if doctor else None,
+            prescription_date=med_data.prescription_date,
+        )
+        db.add(med)
+        db.flush()
+        med_count += 1
+
+        s = med_data.schedule
+        db.add(MedicationSchedule(
+            medication_id=med.id,
+            before_breakfast=s.before_breakfast,
+            after_breakfast=s.after_breakfast,
+            before_lunch=s.before_lunch,
+            after_lunch=s.after_lunch,
+            before_dinner=s.before_dinner,
+            after_dinner=s.after_dinner,
+        ))
+        sched_count += 1
+
+    return {
+        "doctor_id": doctor.id if doctor else None,
+        "medications_inserted": med_count,
+        "schedules_inserted": sched_count,
+    }
+import os
+from typing import Optional
+
 from services.parsers.prescription_parser import parse_prescription_pdf, ParsedPrescription
 
 

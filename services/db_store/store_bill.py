@@ -18,8 +18,66 @@ import os
 from decimal import Decimal
 from typing import Optional
 
+from sqlalchemy.orm import Session
+
 from services.parsers.bill_parser import parse_bill_pdf, extract_raw_text, ParsedBill
 from services.llm_validators.llm_bill_validator import validate_bill
+
+
+# ---------------------------------------------------------------------------
+# New: store bill linked to a discharge record (used by discharge service)
+# ---------------------------------------------------------------------------
+
+def store_bill_for_discharge(
+    db: Session,
+    parsed: ParsedBill,
+    discharge_id: int,
+    bill_url: Optional[str] = None,
+) -> dict:
+    """
+    Persist a ParsedBill into the database, linked to a discharge record.
+
+    Does NOT create/commit the session — caller controls the transaction.
+    Raises ValueError on duplicate invoice number.
+    """
+    from models.bill import Bill
+    from models.bill_description import BillDescription
+
+    existing = db.query(Bill).filter(
+        Bill.invoice_number == parsed.bill.invoice_number
+    ).first()
+    if existing:
+        raise ValueError(f"Bill with invoice '{parsed.bill.invoice_number}' already exists.")
+
+    bill = Bill(
+        discharge_id=discharge_id,
+        invoice_number=parsed.bill.invoice_number,
+        invoice_date=parsed.bill.invoice_date,
+        due_date=parsed.bill.due_date,
+        initial_amount=parsed.bill.initial_amount or Decimal("0.00"),
+        discount_amount=parsed.bill.discount_amount or Decimal("0.00"),
+        tax_amount=parsed.bill.tax_amount or Decimal("0.00"),
+        total_amount=parsed.bill.total_amount,
+        bill_url=bill_url,
+    )
+    db.add(bill)
+    db.flush()
+
+    items = [
+        BillDescription(
+            bill_id=bill.id,
+            cpt_code=item.cpt_code,
+            description=item.description,
+            qty=item.qty or 1,
+            unit_price=item.unit_price or Decimal("0.00"),
+            total_price=item.total_price or Decimal("0.00"),
+        )
+        for item in parsed.line_items
+        if item.description
+    ]
+    db.bulk_save_objects(items)
+
+    return {"bill_id": bill.id, "line_items_inserted": len(items)}
 
 
 # ---------------------------------------------------------------------------

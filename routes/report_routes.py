@@ -15,6 +15,7 @@ from datetime import datetime
 from core.database import get_db
 from services.parsers.report_parser import parse_pdf
 from services.db_store.store_report import get_patient_by_id, check_duplicate_report, store_report
+from models.discharge_history import DischargeHistory
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ router = APIRouter(prefix="/api/reports", tags=["Reports"])
 
 @router.post("/upload", status_code=status.HTTP_201_CREATED)
 async def upload_and_process_report(
-    patient_id: int = Form(..., description="ID of the patient"),
+    discharge_id: int = Form(..., description="ID of the discharge record"),
     file: UploadFile = File(..., description="PDF file of medical report"),
     strategy: str = Form("auto", description="Extraction strategy: 'auto' (default), 'text', or 'vision'"),
     db: Session = Depends(get_db)
@@ -66,6 +67,12 @@ async def upload_and_process_report(
         # ── STEP 2: Upload to Cloudinary ──────────────────────────────────────
         from services.storage.cloudinary_storage import upload_medical_pdf
         from io import BytesIO
+
+        # Resolve patient_id via discharge for Cloudinary folder organisation
+        discharge = db.query(DischargeHistory).filter(DischargeHistory.id == discharge_id).first()
+        if not discharge:
+            raise HTTPException(status_code=404, detail=f"Discharge id={discharge_id} not found.")
+        patient_id = discharge.patient_id
         
         try:
             # Create BytesIO from content for Cloudinary
@@ -118,12 +125,15 @@ async def upload_and_process_report(
                 detail="No test results found in PDF."
             )
 
-        # ── STEP 5: Lookup patient ────────────────────────────────────────────
-        patient = get_patient_by_id(db, patient_id)
+        # ── STEP 5: Lookup patient via discharge ─────────────────────────────
+        discharge = db.query(DischargeHistory).filter(DischargeHistory.id == discharge_id).first()
+        if not discharge:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Discharge id={discharge_id} not found.")
+        patient = get_patient_by_id(db, discharge.patient_id)
         if not patient:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Patient with ID {patient_id} not found."
+                detail=f"Patient for discharge id={discharge_id} not found."
             )
 
         # ── STEP 6: Duplicate check ───────────────────────────────────────────
@@ -132,7 +142,7 @@ async def upload_and_process_report(
         
         is_duplicate = check_duplicate_report(
             db,
-            patient.id,
+            discharge_id,
             validated_report.header.report_name,
             report_date,
         )
@@ -140,7 +150,7 @@ async def upload_and_process_report(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
-                    f"Report '{validated_report.header.report_name}' for patient {patient_id} "
+                    f"Report '{validated_report.header.report_name}' for discharge {discharge_id} "
                     f"dated {validated_report.header.report_date} already exists."
                 )
             )
@@ -149,7 +159,7 @@ async def upload_and_process_report(
         report = store_report(
             db=db,
             validated_report=validated_report,
-            patient_id=patient.id,
+            discharge_id=discharge_id,
             report_url=cloudinary_url,
         )
 
@@ -159,7 +169,7 @@ async def upload_and_process_report(
             "data": {
                 "report_id": report.id,
                 "report_name": report.report_name,
-                "patient_id": report.patient_id,
+                "discharge_id": report.discharge_id,
                 "patient_email": patient.email,
                 "report_date": report.report_date.isoformat() if report.report_date else None,
                 "collection_date": report.collection_date.isoformat() if report.collection_date else None,

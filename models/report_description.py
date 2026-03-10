@@ -9,7 +9,7 @@ class ReportDescription(Base):
     id = Column(Integer, primary_key=True, autoincrement=True, index=True)
 
     report_id = Column(Integer, ForeignKey("reports.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
-    patient_id = Column(Integer, ForeignKey("patients.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
+    discharge_id = Column(Integer, ForeignKey("discharge_history.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
 
     # Test / analyte information
     test_name = Column(String(255), nullable=False)           # e.g. "Systolic Blood Pressure (SBP)"
@@ -27,4 +27,4 @@ class ReportDescription(Base):
 
     # Relationships
     report = relationship("Report", back_populates="descriptions")
-    patient = relationship("Patient")
+    discharge = relationship("DischargeHistory")

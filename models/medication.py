@@ -9,7 +9,7 @@ class Medication(Base):
     __tablename__ = "medications"
 
     id = Column(Integer, primary_key=True, autoincrement=True, index=True)
-    patient_id = Column(Integer, ForeignKey("patients.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
+    discharge_id = Column(Integer, ForeignKey("discharge_history.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
     drug_name = Column(String, nullable=False)
     dosage = Column(String, nullable=False)  # e.g., "1 tablet", "5ml"
     frequency_of_dose_per_day = Column(Integer, nullable=False)  # e.g., 1, 2, 3 times per day
@@ -23,7 +23,7 @@ class Medication(Base):
     prescription_date = Column(Date, nullable=True)
 
     # Relationships
-    patient = relationship("Patient", back_populates="medications")
+    discharge = relationship("DischargeHistory", back_populates="medications")
     doctor = relationship("Doctor", back_populates="medications")
-    recurrence = relationship("RecurrenceType", back_populates="medications")
+    recurrence = relationship("RecurrenceType", back_populates="medications", cascade="all, delete-orphan", single_parent=True)
     schedule = relationship("MedicationSchedule", back_populates="medication", uselist=False, cascade="all, delete-orphan")
