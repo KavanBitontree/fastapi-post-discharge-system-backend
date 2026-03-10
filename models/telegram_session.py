@@ -28,7 +28,7 @@ class TelegramSession(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=True)
 
     # Relationships
-    patient = relationship("Patient", back_populates="telegram_sessions")
-
+    discharge = relationship("DischargeHistory", back_populates="telegram_sessions")
+    
     def __repr__(self):
         return f"<TelegramSession(id={self.id}, telegram_id={self.telegram_id}, status={self.session_status})>"

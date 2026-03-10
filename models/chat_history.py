@@ -8,12 +8,7 @@ class ChatHistory(Base):
     __tablename__ = "chat_history"
 
     id = Column(Integer, primary_key=True, autoincrement=True, index=True)
-    patient_id = Column(
-        Integer,
-        ForeignKey("patients.id", ondelete="CASCADE", onupdate="CASCADE"),
-        nullable=False,
-        index=True,
-    )
+    discharge_id = Column(Integer, ForeignKey("discharge_history.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
     user_msg = Column(Text, nullable=False)
     ai_msg = Column(Text, nullable=False)
     timestamp = Column(
@@ -24,4 +19,4 @@ class ChatHistory(Base):
     )
 
     # Relationship
-    patient = relationship("Patient", back_populates="chat_history")
+    discharge = relationship("DischargeHistory", back_populates="chat_history")

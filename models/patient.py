@@ -22,5 +22,3 @@ class Patient(Base):
     # Relationships
     discharge_histories = relationship("DischargeHistory", back_populates="patient", cascade="all, delete-orphan")
     refresh_tokens = relationship("RefreshToken", back_populates="patient", cascade="all, delete-orphan")
-    telegram_sessions = relationship("TelegramSession", back_populates="patient", cascade="all, delete-orphan")
-    chat_history = relationship("ChatHistory", back_populates="patient", cascade="all, delete-orphan")
