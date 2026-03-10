@@ -4,7 +4,7 @@ patient_friendly_report_routes.py
 API endpoint for converting discharge summary PDFs to patient-friendly reports.
 """
 
-from fastapi import APIRouter, Depends, status, UploadFile, File, HTTPException
+from fastapi import APIRouter, Depends, status, UploadFile, File, HTTPException, Path
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from core.database import get_db
@@ -14,6 +14,8 @@ from schemas.patient_friendly_report_schemas import (
 )
 from controllers.patient_friendly_report_controller import PatientFriendlyReportController
 from services.pdf_generator import generate_patient_friendly_pdf
+from services.storage.cloudinary_storage import upload_medical_pdf
+from models.discharge_history import DischargeHistory
 import pdfplumber
 from io import BytesIO
 import time
@@ -26,10 +28,11 @@ router = APIRouter(
 
 
 @router.post(
-    "/convert-pdf",
+    "/convert-pdf/{patient_id}",
     status_code=status.HTTP_200_OK
 )
 async def convert_discharge_summary_pdf(
+    patient_id: int = Path(..., description="Patient ID"),
     file: UploadFile = File(..., description="PDF file of discharge summary (15-16 pages)"),
     db: Session = Depends(get_db)
 ):
@@ -43,9 +46,15 @@ async def convert_discharge_summary_pdf(
     2. Extract text from PDF
     3. Convert medical jargon to simple language
     4. Generate attractive PDF report
-    5. Return formatted PDF for download
+    5. Upload original discharge summary to Cloudinary
+    6. Upload patient-friendly report to Cloudinary
+    7. Find latest discharge history for patient
+    8. Save both URLs to database
+    9. Return Cloudinary links
     
     Returns:
+    - Cloudinary URL of original discharge summary
+    - Cloudinary URL of patient-friendly PDF report
     - Patient-friendly PDF report (1 page, easy to read)
     - Summary (500-700 words in simple language)
     - Key points (3-5 bullet points)
@@ -57,9 +66,10 @@ async def convert_discharge_summary_pdf(
     
     Example Usage:
     - Click "Try it out"
+    - Enter patient_id in URL
     - Click "Choose File" and select your discharge summary PDF
     - Click "Execute"
-    - Wait for the patient-friendly PDF to download
+    - Get Cloudinary links and download the patient-friendly PDF
     """
     
     # Validate file type
@@ -106,7 +116,7 @@ async def convert_discharge_summary_pdf(
         # Create request object
         request_data = PatientFriendlyReportRequest(
             discharge_summary_text=extracted_text,
-            patient_id=None  # Optional for PDF upload
+            patient_id=patient_id
         )
         
         # Convert to patient-friendly report
@@ -122,12 +132,74 @@ async def convert_discharge_summary_pdf(
         print(f"[pdf-converter] Generating attractive PDF report...")
         pdf_file = generate_patient_friendly_pdf(result.model_dump())
         
-        # Return PDF as downloadable file
-        return StreamingResponse(
-            iter([pdf_file.getvalue()]),
-            media_type="application/pdf",
-            headers={"Content-Disposition": "attachment; filename=patient_friendly_report.pdf"}
-        )
+        # Upload both PDFs to Cloudinary
+        print(f"[pdf-converter] Uploading PDFs to Cloudinary...")
+        try:
+            # 1. Upload original discharge summary PDF
+            print(f"[pdf-converter] Uploading original discharge summary...")
+            pdf_buffer.seek(0)  # Reset buffer position
+            discharge_summary_result = upload_medical_pdf(
+                file=pdf_buffer,
+                filename=f"discharge_summary_patient_{patient_id}.pdf",
+                document_type="report",
+                patient_id=patient_id
+            )
+            discharge_summary_url = discharge_summary_result["secure_url"]
+            print(f"[pdf-converter] Discharge summary uploaded: {discharge_summary_url}")
+            
+            # 2. Upload patient-friendly report PDF
+            print(f"[pdf-converter] Uploading patient-friendly report...")
+            pdf_file.seek(0)  # Reset buffer position
+            patient_friendly_result = upload_medical_pdf(
+                file=pdf_file,
+                filename=f"patient_friendly_report_patient_{patient_id}.pdf",
+                document_type="report",
+                patient_id=patient_id
+            )
+            patient_friendly_url = patient_friendly_result["secure_url"]
+            print(f"[pdf-converter] Patient-friendly report uploaded: {patient_friendly_url}")
+            
+            # Find latest discharge history for this patient
+            print(f"[pdf-converter] Finding latest discharge history for patient {patient_id}...")
+            latest_discharge = db.query(DischargeHistory).filter(
+                DischargeHistory.patient_id == patient_id
+            ).order_by(DischargeHistory.created_at.desc()).first()
+            
+            if latest_discharge:
+                # Save both URLs to database
+                latest_discharge.discharge_summary_url = discharge_summary_url
+                latest_discharge.patient_friendly_summary_url = patient_friendly_url
+                db.commit()
+                print(f"[pdf-converter] Saved both URLs to discharge history {latest_discharge.id}")
+                print(f"  - discharge_summary_url: {discharge_summary_url}")
+                print(f"  - patient_friendly_summary_url: {patient_friendly_url}")
+            else:
+                print(f"[pdf-converter] Warning: No discharge history found for patient {patient_id}")
+            
+            # Return response with both Cloudinary URLs
+            return {
+                "discharge_summary_url": discharge_summary_url,
+                "discharge_summary_public_id": discharge_summary_result["public_id"],
+                "patient_friendly_url": patient_friendly_url,
+                "patient_friendly_public_id": patient_friendly_result["public_id"],
+                "patient_id": patient_id,
+                "discharge_id": latest_discharge.id if latest_discharge else None,
+                "summary": result.summary,
+                "key_points": result.key_points,
+                "medications": result.medications,
+                "follow_up_instructions": result.follow_up_instructions,
+                "warning_signs": result.warning_signs,
+                "processing_time_seconds": result.processing_time_seconds,
+                "original_length_chars": result.original_length_chars,
+                "summary_length_chars": result.summary_length_chars,
+            }
+            
+        except Exception as cloudinary_error:
+            print(f"[pdf-converter] Cloudinary upload failed: {str(cloudinary_error)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to upload PDFs to Cloudinary: {str(cloudinary_error)}"
+            )
         
     except HTTPException:
         raise
