@@ -29,8 +29,7 @@ from routes import fetch_patient_routes
 from routes.report_routes import router as report_router
 from routes.bill_routes import router as bill_router
 from routes.prescription_routes import router as prescription_router
-app = FastAPI(docs_url=None,
-              swagger_ui_parameters={"persistAuthorization": True})
+from routes.patient_friendly_report_routes import router as patient_friendly_router
 from routes.reminder_routes import router as reminder_router   # ← new
 from routes.chat_routes import router as chat_router
 from routes.cron_reminder import router as cron_reminder_router
@@ -77,6 +76,7 @@ app.include_router(router)
 app.include_router(report_router)
 app.include_router(bill_router)
 app.include_router(prescription_router)
+app.include_router(patient_friendly_router)
 app.include_router(reminder_router)   # ← new: /reminders/trigger
 app.include_router(chat_router)        # POST /chat
 app.include_router(cron_reminder_router)  # POST /cron/reminders
