@@ -15,7 +15,7 @@ class TelegramSession(Base):
     __tablename__ = "telegram_sessions"
 
     id = Column(Integer, primary_key=True, index=True)
-    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=True)  # Nullable until verified
+    discharge_id = Column(Integer, ForeignKey("discharge_history.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
     session_status = Column(SQLEnum(SessionStatus), nullable=False, default=SessionStatus.AWAIT_MOBILE)  # Initial status awaiting mobile number
     telegram_id = Column(String, nullable=False, unique=True, index=True)  # Telegram user ID
     phone_number = Column(String, nullable=True)  # Phone number for verification
