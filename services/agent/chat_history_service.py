@@ -9,15 +9,15 @@ from sqlalchemy.orm import Session
 from models.chat_history import ChatHistory
 
 
-def fetch_last_10(patient_id: int, db: Session) -> list[dict]:
+def fetch_last_10(discharge_id: int, db: Session) -> list[dict]:
     """
-    Fetch the last 10 conversation turns for a patient,
+    Fetch the last 10 conversation turns for a discharge,
     returned as [{"role": "user"|"assistant", "content": str}, ...].
     Ordered oldest → newest so LLMs read them chronologically.
     """
     rows = (
         db.query(ChatHistory)
-        .filter(ChatHistory.patient_id == patient_id)
+        .filter(ChatHistory.discharge_id == discharge_id)
         .order_by(ChatHistory.timestamp.desc())
         .limit(10)
         .all()
@@ -31,10 +31,10 @@ def fetch_last_10(patient_id: int, db: Session) -> list[dict]:
     return history
 
 
-def save_turn(patient_id: int, user_msg: str, ai_msg: str, db: Session) -> None:
+def save_turn(discharge_id: int, user_msg: str, ai_msg: str, db: Session) -> None:
     """Persist a completed conversation turn."""
     entry = ChatHistory(
-        patient_id=patient_id,
+        discharge_id=discharge_id,
         user_msg=user_msg,
         ai_msg=ai_msg,
     )

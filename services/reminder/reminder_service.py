@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session, joinedload
 
+from models.discharge_history import DischargeHistory
 from models.medication import Medication
 from models.medication_schedule import MedicationSchedule
 from models.patient import Patient
@@ -223,7 +224,7 @@ def send_telegram_message(chat_id: str, body: str) -> bool:
 
 def collect_due_medications(
     db: Session,
-    patient_id: int,
+    discharge_id: int,
     slot: str,
     now: datetime,
 ) -> list[dict]:
@@ -242,7 +243,7 @@ def collect_due_medications(
             joinedload(Medication.recurrence),
         )
         .filter(
-            Medication.patient_id == patient_id,
+            Medication.discharge_id == discharge_id,
             Medication.is_active == True,
         )
         .all()
@@ -329,32 +330,29 @@ def run_reminder_for_slot(db: Session, slot: str) -> None:
         logger.info("No verified Telegram patients \u2014 slot '%s' skipped", slot)
         return
 
-    pid_to_chat: dict[int, str] = {
-        s.patient_id: s.telegram_id
+    did_to_chat: dict[int, str] = {
+        s.discharge_id: s.telegram_id
         for s in verified
-        if s.patient_id
+        if s.discharge_id
     }
 
-    patients: list[Patient] = (
-        db.query(Patient)
-        .filter(
-            Patient.id.in_(list(pid_to_chat.keys())),
-            Patient.is_active == True,
-        )
+    discharges = (
+        db.query(DischargeHistory)
+        .filter(DischargeHistory.id.in_(list(did_to_chat.keys())))
         .all()
     )
 
     sent_count = 0
-    for patient in patients:
-        chat_id = pid_to_chat.get(patient.id)
+    for discharge in discharges:
+        chat_id = did_to_chat.get(discharge.id)
         if not chat_id:
             continue
 
-        due = collect_due_medications(db, patient.id, slot, now)
+        due = collect_due_medications(db, discharge.id, slot, now)
         if not due:
             continue
 
-        message = build_telegram_message(patient, due, now)
+        message = build_telegram_message(discharge.patient, due, now)
         success = send_telegram_message(chat_id, message)
 
         if success:
@@ -402,18 +400,15 @@ def run_all_due_reminders(db: Session, window_minutes: int = 20) -> dict:
         logger.info("No verified Telegram patients \u2014 cron skipped")
         return {"notified": 0, "skipped": 0}
 
-    pid_to_chat: dict[int, str] = {
-        s.patient_id: s.telegram_id
+    did_to_chat: dict[int, str] = {
+        s.discharge_id: s.telegram_id
         for s in verified
-        if s.patient_id
+        if s.discharge_id
     }
 
-    patients: list[Patient] = (
-        db.query(Patient)
-        .filter(
-            Patient.id.in_(list(pid_to_chat.keys())),
-            Patient.is_active == True,
-        )
+    discharges = (
+        db.query(DischargeHistory)
+        .filter(DischargeHistory.id.in_(list(did_to_chat.keys())))
         .all()
     )
 
@@ -423,8 +418,8 @@ def run_all_due_reminders(db: Session, window_minutes: int = 20) -> dict:
     sent_count = 0
     skip_count = 0
 
-    for patient in patients:
-        chat_id = pid_to_chat.get(patient.id)
+    for discharge in discharges:
+        chat_id = did_to_chat.get(discharge.id)
         if not chat_id:
             continue
 
@@ -437,7 +432,7 @@ def run_all_due_reminders(db: Session, window_minutes: int = 20) -> dict:
                 joinedload(Medication.recurrence),
             )
             .filter(
-                Medication.patient_id == patient.id,
+                Medication.discharge_id == discharge.id,
                 Medication.is_active == True,
             )
             .all()
@@ -482,7 +477,7 @@ def run_all_due_reminders(db: Session, window_minutes: int = 20) -> dict:
             skip_count += 1
             continue
 
-        message = build_telegram_message(patient, due, now)
+        message = build_telegram_message(discharge.patient, due, now)
         success = send_telegram_message(chat_id, message)
 
         if success:

@@ -2,22 +2,22 @@
 Cloudinary Storage Service
 ---------------------------
 Handles PDF and image uploads to Cloudinary with proper organization.
-
+ 
 Separation of concerns:
 - Upload files to Cloudinary
 - Generate secure URLs
 - Delete files when needed
 - Organize by document type (reports, bills, prescriptions)
 """
-
+ 
 import cloudinary
 import cloudinary.uploader
 from typing import Optional, BinaryIO
 from datetime import datetime
 from pathlib import Path
-
+ 
 from core.config import settings
-
+ 
 # Configure Cloudinary
 cloudinary.config(
     cloud_name=settings.CLOUD_NAME,
@@ -25,18 +25,19 @@ cloudinary.config(
     api_secret=settings.CLOUDINARY_API_SECRET,
     secure=True
 )
-
-
+ 
+ 
 class CloudinaryStorage:
     """Cloudinary storage service for medical documents."""
-    
+   
     # Folder structure in Cloudinary
     FOLDERS = {
         "report": "medical_documents/reports",
         "bill": "medical_documents/bills",
         "prescription": "medical_documents/prescriptions",
+        "ird": "ird_documents",
     }
-    
+   
     @classmethod
     def upload_pdf(
         cls,
@@ -47,7 +48,7 @@ class CloudinaryStorage:
     ) -> dict:
         """
         Upload PDF to Cloudinary.
-        
+       
         Parameters
         ----------
         file : BinaryIO
@@ -58,7 +59,7 @@ class CloudinaryStorage:
             Type of document: 'report', 'bill', or 'prescription'
         patient_id : int
             Patient ID for organization
-            
+           
         Returns
         -------
         dict
@@ -66,24 +67,24 @@ class CloudinaryStorage:
         """
         if document_type not in cls.FOLDERS:
             raise ValueError(f"Invalid document_type: {document_type}")
-        
+       
         try:
             # Generate unique public_id
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             safe_filename = Path(filename).stem.replace(" ", "_")
             # Don't include folder in public_id since we're already specifying it separately
             public_id = f"patient_{patient_id}/{timestamp}_{safe_filename}"
-            
+           
             # Upload to Cloudinary
             result = cloudinary.uploader.upload(
                 file,
                 public_id=public_id,
-                resource_type="raw",  # For PDFs
+                resource_type="image",  # Cloudinary supports PDFs under 'image', serving them with correct application/pdf content-type
                 folder=cls.FOLDERS[document_type],
                 tags=[f"patient_{patient_id}", document_type, "medical_document"],
                 context=f"patient_id={patient_id}|document_type={document_type}|filename={filename}",
             )
-            
+           
             return {
                 "url": result["url"],
                 "secure_url": result["secure_url"],
@@ -94,7 +95,7 @@ class CloudinaryStorage:
             }
         except Exception as e:
             raise Exception(f"Cloudinary upload failed: {str(e)}")
-    
+   
     @classmethod
     def upload_image(
         cls,
@@ -105,7 +106,7 @@ class CloudinaryStorage:
     ) -> dict:
         """
         Upload image to Cloudinary.
-        
+       
         Parameters
         ----------
         file : BinaryIO
@@ -116,7 +117,7 @@ class CloudinaryStorage:
             Type of document: 'report', 'bill', or 'prescription'
         patient_id : int
             Patient ID for organization
-            
+           
         Returns
         -------
         dict
@@ -124,14 +125,14 @@ class CloudinaryStorage:
         """
         if document_type not in cls.FOLDERS:
             raise ValueError(f"Invalid document_type: {document_type}")
-        
+       
         try:
             # Generate unique public_id
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             safe_filename = Path(filename).stem.replace(" ", "_")
             # Don't include folder in public_id since we're already specifying it separately
             public_id = f"patient_{patient_id}/{timestamp}_{safe_filename}"
-            
+           
             # Upload to Cloudinary
             result = cloudinary.uploader.upload(
                 file,
@@ -141,7 +142,7 @@ class CloudinaryStorage:
                 tags=[f"patient_{patient_id}", document_type, "medical_document", "image"],
                 context=f"patient_id={patient_id}|document_type={document_type}|filename={filename}",
             )
-            
+           
             return {
                 "url": result["url"],
                 "secure_url": result["secure_url"],
@@ -154,19 +155,19 @@ class CloudinaryStorage:
             }
         except Exception as e:
             raise Exception(f"Cloudinary upload failed: {str(e)}")
-    
+   
     @classmethod
-    def delete_file(cls, public_id: str, resource_type: str = "raw") -> dict:
+    def delete_file(cls, public_id: str, resource_type: str = "image") -> dict:
         """
         Delete file from Cloudinary.
-        
+       
         Parameters
         ----------
         public_id : str
             Cloudinary public_id of the file
         resource_type : str
-            'raw' for PDFs, 'image' for images
-            
+            'image' for PDFs and images (Cloudinary serves PDFs with correct content-type under 'image')
+           
         Returns
         -------
         dict
@@ -177,33 +178,27 @@ class CloudinaryStorage:
             resource_type=resource_type,
         )
         return result
-    
-    @classmethod
-    def get_file_url(cls, public_id: str, resource_type: str = "raw") -> str:
+   
+@classmethod
+def get_file_url(cls, public_id: str, resource_type: str = "image") -> str:
         """
         Get secure URL for a file.
-        
+       
         Parameters
         ----------
         public_id : str
             Cloudinary public_id
         resource_type : str
-            'raw' for PDFs, 'image' for images
-            
+            'image' for PDFs and images
+       
         Returns
         -------
         str
             Secure URL
         """
-        if resource_type == "image":
-            return cloudinary.CloudinaryImage(public_id).build_url(secure=True)
-        else:
-            return cloudinary.CloudinaryResource(public_id).build_url(
-                resource_type="raw",
-                secure=True
-            )
-
-
+        return cloudinary.CloudinaryImage(public_id).build_url(secure=True)
+ 
+ 
 # Convenience functions
 def upload_medical_pdf(
     file: BinaryIO,
@@ -213,8 +208,8 @@ def upload_medical_pdf(
 ) -> dict:
     """Upload medical PDF to Cloudinary."""
     return CloudinaryStorage.upload_pdf(file, filename, document_type, patient_id)
-
-
+ 
+ 
 def upload_medical_image(
     file: BinaryIO,
     filename: str,
@@ -223,8 +218,10 @@ def upload_medical_image(
 ) -> dict:
     """Upload medical image to Cloudinary."""
     return CloudinaryStorage.upload_image(file, filename, document_type, patient_id)
-
-
-def delete_medical_file(public_id: str, resource_type: str = "raw") -> dict:
+ 
+ 
+def delete_medical_file(public_id: str, resource_type: str = "image") -> dict:
     """Delete medical file from Cloudinary."""
     return CloudinaryStorage.delete_file(public_id, resource_type)
+ 
+ 

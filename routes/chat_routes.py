@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from models.patient import Patient
+from models.discharge_history import DischargeHistory
 from services.agent.graph import build_agent_graph
 from services.agent.chat_history_service import fetch_last_10, save_turn
 from services.agent.state import AgentState
@@ -32,12 +32,12 @@ router = APIRouter(prefix="/chat", tags=["Chat Agent"])
 # ── Request / Response schemas ────────────────────────────────────────────────
 
 class ChatRequest(BaseModel):
-    patient_id: int
+    discharge_id: int
     message: str
 
 
 class ChatResponse(BaseModel):
-    patient_id: int
+    discharge_id: int
     user_message: str
     ai_response: str
     intents_detected: list[str]
@@ -57,21 +57,20 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
       4. Save turn to chat_history
       5. Return final_answer
     """
-    # 1. Validate patient
-    patient = db.query(Patient).filter(
-        Patient.id == req.patient_id,
-        Patient.is_active == True,
+    # 1. Validate discharge
+    discharge = db.query(DischargeHistory).filter(
+        DischargeHistory.id == req.discharge_id,
     ).first()
-    if not patient:
-        raise HTTPException(status_code=404, detail=f"Patient id={req.patient_id} not found or inactive")
+    if not discharge:
+        raise HTTPException(status_code=404, detail=f"Discharge id={req.discharge_id} not found")
 
     # 2. Fetch chat history
-    history = fetch_last_10(req.patient_id, db)
+    history = fetch_last_10(req.discharge_id, db)
 
     # 3. Build initial state
     now_str = datetime.now(_TIMEZONE).strftime("%A, %d %b %Y, %I:%M %p IST")
     initial_state: AgentState = {
-        "patient_id":       req.patient_id,
+        "discharge_id":     req.discharge_id,
         "user_msg":         req.message.strip(),
         "current_datetime": now_str,
         "chat_history":     history,
@@ -84,14 +83,14 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
         "error":            None,
     }
 
-    # 4. Build graph (tools bound to this patient + session)
-    graph = build_agent_graph(req.patient_id, db)
+    # 4. Build graph (tools bound to this discharge + session)
+    graph = build_agent_graph(req.discharge_id, db)
 
     # 5. Run graph
     try:
         result: AgentState = graph.invoke(initial_state)
     except Exception as e:
-        logger.error("Graph invoke failed for patient %s: %s", req.patient_id, e, exc_info=True)
+        logger.error("Graph invoke failed for discharge %s: %s", req.discharge_id, e, exc_info=True)
         raise HTTPException(status_code=500, detail="Agent processing failed. Please try again.")
 
     # 6. Extract answer
@@ -103,12 +102,12 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
 
     # 7. Save to chat_history (only if we got a real answer)
     try:
-        save_turn(req.patient_id, req.message, final_answer, db)
+        save_turn(req.discharge_id, req.message, final_answer, db)
     except Exception as e:
         logger.warning("Failed to save chat history: %s", e)
 
     return ChatResponse(
-        patient_id=req.patient_id,
+        discharge_id=req.discharge_id,
         user_message=req.message,
         ai_response=final_answer,
         intents_detected=intents,

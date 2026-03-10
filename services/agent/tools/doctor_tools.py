@@ -22,9 +22,9 @@ def _doctor_block(doc: Doctor) -> str:
     )
 
 
-def build_doctor_tools(patient_id: int, db: Session) -> list:
+def build_doctor_tools(discharge_id: int, db: Session) -> list:
     """
-    Factory — returns tool list bound to this patient's session.
+    Factory — returns tool list bound to this discharge's session.
     Called once per request when building the graph.
     """
 
@@ -37,7 +37,7 @@ def build_doctor_tools(patient_id: int, db: Session) -> list:
         """
         rows = (
             db.query(PatientDoctor)
-            .filter(PatientDoctor.patient_id == patient_id)
+            .filter(PatientDoctor.discharge_id == discharge_id)
             .all()
         )
         if not rows:
@@ -65,7 +65,7 @@ def build_doctor_tools(patient_id: int, db: Session) -> list:
             db.query(PatientDoctor)
             .join(Doctor, Doctor.id == PatientDoctor.doctor_id)
             .filter(
-                PatientDoctor.patient_id == patient_id,
+                PatientDoctor.discharge_id == discharge_id,
                 Doctor.full_name.ilike(f"%{name}%"),
             )
             .all()
@@ -85,7 +85,7 @@ def build_doctor_tools(patient_id: int, db: Session) -> list:
         rows = (
             db.query(PatientDoctor)
             .join(Doctor, Doctor.id == PatientDoctor.doctor_id)
-            .filter(PatientDoctor.patient_id == patient_id)
+            .filter(PatientDoctor.discharge_id == discharge_id)
             .all()
         )
         if not rows:

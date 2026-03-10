@@ -42,7 +42,7 @@ def _bill_line(d: BillDescription) -> str:
     )
 
 
-def build_bill_tools(patient_id: int, db: Session) -> list:
+def build_bill_tools(discharge_id: int, db: Session) -> list:
 
     @tool
     def get_all_bills() -> str:
@@ -52,7 +52,7 @@ def build_bill_tools(patient_id: int, db: Session) -> list:
         """
         bills = (
             db.query(Bill)
-            .filter(Bill.patient_id == patient_id)
+            .filter(Bill.discharge_id == discharge_id)
             .order_by(Bill.invoice_date.desc())
             .all()
         )
@@ -88,7 +88,7 @@ def build_bill_tools(patient_id: int, db: Session) -> list:
         bill = (
             db.query(Bill)
             .filter(
-                Bill.patient_id == patient_id,
+                Bill.discharge_id == discharge_id,
                 Bill.invoice_number == invoice_number,
             )
             .first()
@@ -114,7 +114,7 @@ def build_bill_tools(patient_id: int, db: Session) -> list:
         """
         bills = (
             db.query(Bill)
-            .filter(Bill.patient_id == patient_id)
+            .filter(Bill.discharge_id == discharge_id)
             .order_by(Bill.invoice_date.desc())
             .all()
         )
@@ -146,7 +146,7 @@ def build_bill_tools(patient_id: int, db: Session) -> list:
         """
         bill = (
             db.query(Bill)
-            .filter(Bill.patient_id == patient_id)
+            .filter(Bill.discharge_id == discharge_id)
             .order_by(Bill.invoice_date.desc())
             .first()
         )
@@ -172,7 +172,7 @@ def build_bill_tools(patient_id: int, db: Session) -> list:
         """
         bills = (
             db.query(Bill)
-            .filter(Bill.patient_id == patient_id)
+            .filter(Bill.discharge_id == discharge_id)
             .order_by(Bill.invoice_date.desc())
             .all()
         )

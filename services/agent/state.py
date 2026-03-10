@@ -4,7 +4,7 @@ services/agent/state.py
 Shared state that flows through every node in the LangGraph.
 
 TypedDict fields:
-  patient_id      — resolved from request, never changes
+  discharge_id    — resolved from TelegramSession, never changes
   user_msg        — original message from patient
   chat_history    — last 10 turns fetched once at graph entry
   intents         — list decided by Supervisor: ["reports"], ["bills","medicine"], etc.
@@ -21,7 +21,7 @@ from typing import TypedDict, Optional
 
 
 class AgentState(TypedDict):
-    patient_id:       int
+    discharge_id:     int
     user_msg:         str
     current_datetime: str                # ISO-like string: "Monday, 09 Mar 2026, 02:15 PM IST"
     chat_history:     list[dict]         # [{"role": "user"|"assistant", "content": str}]

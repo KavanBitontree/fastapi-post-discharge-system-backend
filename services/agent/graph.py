@@ -96,18 +96,18 @@ def route_after_checker(state: AgentState) -> str:
 
 # ── Graph builder ─────────────────────────────────────────────────────────────
 
-def build_agent_graph(patient_id: int, db: Session) -> StateGraph:
+def build_agent_graph(discharge_id: int, db: Session) -> StateGraph:
     """
-    Build a compiled LangGraph for a single patient request.
+    Build a compiled LangGraph for a single discharge request.
 
-    Called once per POST /chat request — tools are bound to the
-    patient's DB session and patient_id at build time.
+    Called once per request — tools are bound to the
+    discharge's DB session and discharge_id at build time.
     """
-    # Build tools bound to this patient + session
-    report_tools   = build_report_tools(patient_id, db)
-    bill_tools     = build_bill_tools(patient_id, db)
-    medicine_tools = build_medicine_tools(patient_id, db)
-    doctor_tools   = build_doctor_tools(patient_id, db)
+    # Build tools bound to this discharge + session
+    report_tools   = build_report_tools(discharge_id, db)
+    bill_tools     = build_bill_tools(discharge_id, db)
+    medicine_tools = build_medicine_tools(discharge_id, db)
+    doctor_tools   = build_doctor_tools(discharge_id, db)
 
     # Build specialist node functions
     reports_node  = build_reports_node(report_tools)
