@@ -24,3 +24,6 @@ class DischargeHistory(Base):
     reports = relationship("Report", back_populates="discharge", cascade="all, delete-orphan")
     medications = relationship("Medication", back_populates="discharge", cascade="all, delete-orphan")
     doctors = relationship("PatientDoctor", back_populates="discharge", cascade="all, delete-orphan")
+    telegram_sessions = relationship("TelegramSession", back_populates="discharge", cascade="all, delete-orphan")
+    chat_history = relationship("ChatHistory", back_populates="discharge", cascade="all, delete-orphan")
+

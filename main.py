@@ -35,6 +35,8 @@ from routes.reminder_routes import router as reminder_router   # ← new
 from routes.chat_routes import router as chat_router
 from routes.cron_reminder import router as cron_reminder_router
 from routes.discharge_routes import router as discharge_router
+from routes.admin_routes import router as admin_analytics_router
+from routes.patient_routes import router as patient_router
 
 
 @asynccontextmanager
