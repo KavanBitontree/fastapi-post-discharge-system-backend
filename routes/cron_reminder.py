@@ -27,10 +27,10 @@ from services.reminder.reminder_service import run_all_due_reminders
 router = APIRouter(prefix="/cron", tags=["Cron"])
 
 
-def _verify_cron_secret(authorization: str = Header(...)) -> None:
-    """Validates the Bearer token against CRON_SECRET."""
-    expected = f"Bearer {settings.CRON_SECRET}"
-    if authorization != expected:
+def _verify_cron_secret(
+    x_cron_secret: str = Header(..., alias="x-cron-secret")
+) -> None:
+    if x_cron_secret != settings.CRON_SECRET:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing cron secret.",
@@ -45,7 +45,7 @@ def cron_reminders(db: Session = Depends(get_db)):
     Sends Telegram medication reminders to all verified patients with a
     20-minute delivery window.
     """
-    result = run_all_due_reminders(db, window_minutes=20)
+    result = run_all_due_reminders(db, window_minutes=5)
     return {
         "message": "Cron reminder job completed.",
         "notified": result["notified"],
