@@ -26,3 +26,6 @@ pillow
 
 # Utilities
 tqdm
+
+numpy
+pinecone>=3.0.0

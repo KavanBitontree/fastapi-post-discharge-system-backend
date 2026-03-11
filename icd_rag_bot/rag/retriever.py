@@ -4,7 +4,6 @@ from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
 
 from pinecone import Pinecone
-from sentence_transformers import SentenceTransformer
 
 
 def get_index(index_name: str, api_key: str):
@@ -12,11 +11,11 @@ def get_index(index_name: str, api_key: str):
     return pc.Index(index_name)
 
 
-def embed_text(model: SentenceTransformer, text: str) -> List[float]:
+def embed_text(model: Any, text: str) -> List[float]:
     return model.encode(text, normalize_embeddings=True).tolist()
 
 
-def embed_texts(model: SentenceTransformer, texts: List[str]) -> List[List[float]]:
+def embed_texts(model: Any, texts: List[str]) -> List[List[float]]:
     # batch encode = faster + consistent normalization
     return model.encode(texts, normalize_embeddings=True).tolist()
 
@@ -99,7 +98,7 @@ def retrieve_candidates_for_problem(
     *,
     index,
     namespace: str,
-    embed_model: SentenceTransformer,
+    embed_model: Any,
     problem: str,
     queries: List[str],
     top_k_per_query: int = 16,
@@ -208,7 +207,7 @@ def retrieve_all_candidates(
     planned_problems: List[Dict[str, Any]],
     index,
     namespace: str,
-    embed_model: SentenceTransformer,
+    embed_model: Any,
     top_k_per_query: int = 16,
     max_candidates_per_problem: int = 40,
     where: Optional[Dict[str, Any]] = None,

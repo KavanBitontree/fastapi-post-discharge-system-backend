@@ -1,30 +1,39 @@
 import os
+import sys
 import json
 from pathlib import Path
 from dotenv import load_dotenv
 from tqdm import tqdm
 
-from pinecone import Pinecone
-from sentence_transformers import SentenceTransformer
+from pinecone import Pinecone, ServerlessSpec
 
-load_dotenv()
+# Allow running from anywhere by adding project root to path
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+load_dotenv(ROOT / ".env")
 
-INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "icd10cm-2026")
-API_KEY = os.getenv("PINECONE_API_KEY")
+from icd_rag_bot.rag.openrouter_client import OpenRouterEmbedder
 
-NAMESPACE = "icd10cm_2026"
+INDEX_NAME  = os.getenv("PINECONE_INDEX_NAME", "icd10cm-2026")
+PINECONE_KEY = os.getenv("PINECONE_API_KEY")
+OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY")
 
-IN_PATH = Path("data/index/icd_records.jsonl")
+NAMESPACE   = "icd10cm_2026"
+EMBED_MODEL = "openai/text-embedding-3-small"
+DIMENSION   = 1536   # text-embedding-3-small output dimension
+BATCH       = 64     # API call batch size
+
+# Path relative to this script's location
+IN_PATH = Path(__file__).parent.parent / "data" / "index" / "icd_records.jsonl"
 
 
 def make_text(rec: dict) -> str:
-    # What we embed (small but informative)
     parts = [
         f"CODE: {rec.get('code', '')}",
         f"TITLE: {rec.get('title', '')}",
     ]
     details = rec.get("details") or []
-    notes = rec.get("notes") or []
+    notes   = rec.get("notes") or []
     if details:
         parts.append("DETAILS: " + " | ".join(details[:30]))
     if notes:
@@ -33,61 +42,81 @@ def make_text(rec: dict) -> str:
 
 
 def main():
-    if not API_KEY:
+    if not PINECONE_KEY:
         raise RuntimeError("Missing PINECONE_API_KEY in .env")
-
+    if not OPENROUTER_KEY:
+        raise RuntimeError("Missing OPENROUTER_API_KEY in .env")
     if not IN_PATH.exists():
-        raise RuntimeError(f"Missing {IN_PATH}. Run Step 3 first.")
+        raise RuntimeError(f"Missing data file: {IN_PATH}")
 
-    print("Loading embedding model (all-MiniLM-L6-v2)...")
-    model = SentenceTransformer("all-MiniLM-L6-v2")  # dim=384
+    print(f"Embedding model : {EMBED_MODEL}  (dim={DIMENSION})")
+    embedder = OpenRouterEmbedder(api_key=OPENROUTER_KEY, model=EMBED_MODEL, batch_size=BATCH)
 
-    pc = Pinecone(api_key=API_KEY)
+    pc = Pinecone(api_key=PINECONE_KEY)
+
+    # Re-create index at correct dimension if needed
+    existing = [idx.name for idx in pc.list_indexes()]
+    if INDEX_NAME in existing:
+        info = pc.describe_index(INDEX_NAME)
+        current_dim = info.dimension
+        if current_dim != DIMENSION:
+            print(f"Index '{INDEX_NAME}' exists with dim={current_dim}; deleting and recreating for dim={DIMENSION}...")
+            pc.delete_index(INDEX_NAME)
+            existing = []
+        else:
+            print(f"Index '{INDEX_NAME}' already at dim={DIMENSION}, reusing.")
+
+    if INDEX_NAME not in existing:
+        print(f"Creating index '{INDEX_NAME}' (dim={DIMENSION}, cosine)...")
+        pc.create_index(
+            name=INDEX_NAME,
+            dimension=DIMENSION,
+            metric="cosine",
+            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+        )
+        # Wait until ready
+        import time
+        for _ in range(30):
+            if pc.describe_index(INDEX_NAME).status.get("ready", False):
+                break
+            time.sleep(3)
+
     index = pc.Index(INDEX_NAME)
 
-    BATCH = 128
-    batch_ids = []
-    batch_vecs = []
-    batch_metas = []
-
-    total = sum(1 for _ in IN_PATH.open("r", encoding="utf-8"))
-
-    def flush():
-        nonlocal batch_ids, batch_vecs, batch_metas
-        if not batch_ids:
-            return
-        vectors = list(zip(batch_ids, batch_vecs, batch_metas))
-        index.upsert(vectors=vectors, namespace=NAMESPACE)
-        batch_ids, batch_vecs, batch_metas = [], [], []
-
+    # Load all records
+    records = []
     with IN_PATH.open("r", encoding="utf-8") as f:
-        for line in tqdm(f, total=total, desc="Upserting ICD vectors"):
-            rec = json.loads(line)
+        for line in f:
+            line = line.strip()
+            if line:
+                records.append(json.loads(line))
 
-            code = rec["code"]
-            text = make_text(rec)
+    print(f"Loaded {len(records):,} records from {IN_PATH.name}")
 
-            vec = model.encode(text, normalize_embeddings=True).tolist()
+    # Embed + upsert in batches
+    upserted = 0
+    for i in tqdm(range(0, len(records), BATCH), desc="Upserting ICD vectors"):
+        batch_recs = records[i : i + BATCH]
+        texts = [make_text(r) for r in batch_recs]
 
+        vecs = embedder.encode(texts, normalize_embeddings=True).tolist()
+
+        vectors = []
+        for rec, vec in zip(batch_recs, vecs):
             meta = {
-                "code": code,
-                "title": rec.get("title", ""),
-                "page": int(rec.get("page", 0) or 0),
+                "code":        rec["code"],
+                "title":       rec.get("title", ""),
+                "page":        int(rec.get("page", 0) or 0),
                 "parent_code": rec.get("parent_code") or "",
-                "level": int(rec.get("level", 0) or 0),
+                "level":       int(rec.get("level", 0) or 0),
             }
+            vectors.append((rec["code"], vec, meta))
 
-            batch_ids.append(code)
-            batch_vecs.append(vec)
-            batch_metas.append(meta)
+        index.upsert(vectors=vectors, namespace=NAMESPACE)
+        upserted += len(vectors)
 
-            if len(batch_ids) >= BATCH:
-                flush()
-
-        flush()
-
-    print("Done upserting ICD vectors.")
-    print(f"Index: {INDEX_NAME} | Namespace: {NAMESPACE}")
+    print(f"\nDone. Upserted {upserted:,} vectors.")
+    print(f"Index: {INDEX_NAME} | Namespace: {NAMESPACE} | Model: {EMBED_MODEL}")
 
 
 if __name__ == "__main__":

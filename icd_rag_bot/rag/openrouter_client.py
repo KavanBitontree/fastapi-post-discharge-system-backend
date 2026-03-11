@@ -60,3 +60,83 @@ def chat_completion(
         return data["choices"][0]["message"]["content"]
     except Exception:
         raise OpenRouterError(f"Unexpected OpenRouter response: {data}")
+
+
+# ── Embeddings ────────────────────────────────────────────────────────────────
+
+OPENROUTER_EMBEDDINGS_URL = "https://openrouter.ai/api/v1/embeddings"
+
+
+class OpenRouterEmbedder:
+    """
+    Drop-in replacement for SentenceTransformer that embeds text via the
+    OpenRouter embeddings API (openai/text-embedding-3-large by default).
+
+    encode() accepts the same signature as SentenceTransformer.encode() and
+    returns a numpy ndarray so that the .tolist() calls in retriever.py work
+    without modification.
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "openai/text-embedding-3-large",
+        batch_size: int = 64,
+    ) -> None:
+        self.api_key = api_key
+        self.model = model
+        self.batch_size = batch_size
+
+    def encode(
+        self,
+        texts,
+        normalize_embeddings: bool = True,
+        **_kwargs,
+    ):
+        import numpy as np
+
+        single = isinstance(texts, str)
+        if single:
+            texts = [texts]
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        all_embeddings: List[List[float]] = []
+        for i in range(0, len(texts), self.batch_size):
+            batch = texts[i : i + self.batch_size]
+            payload = {"model": self.model, "input": batch}
+            try:
+                resp = requests.post(
+                    OPENROUTER_EMBEDDINGS_URL,
+                    headers=headers,
+                    json=payload,
+                    timeout=60,
+                )
+            except requests.RequestException as exc:
+                raise OpenRouterError(f"Embeddings request failed: {exc}") from exc
+
+            if resp.status_code >= 400:
+                raise OpenRouterError(
+                    f"Embeddings error {resp.status_code}: {resp.text}"
+                )
+
+            data = resp.json()
+            try:
+                items = sorted(data["data"], key=lambda x: x["index"])
+                all_embeddings.extend(item["embedding"] for item in items)
+            except Exception as exc:
+                raise OpenRouterError(
+                    f"Unexpected embeddings response format: {data}"
+                ) from exc
+
+        arr = np.array(all_embeddings, dtype=np.float32)
+
+        if normalize_embeddings:
+            norms = np.linalg.norm(arr, axis=1, keepdims=True)
+            norms = np.where(norms == 0, 1.0, norms)
+            arr = arr / norms
+
+        return arr[0] if single else arr

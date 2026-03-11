@@ -35,10 +35,10 @@ _pinecone_index = None
 def _get_embedder():
     global _embedder
     if _embedder is None:
-        from sentence_transformers import SentenceTransformer
-        logger.info("Loading SentenceTransformer 'all-MiniLM-L6-v2'...")
-        _embedder = SentenceTransformer("all-MiniLM-L6-v2")
-        logger.info("SentenceTransformer loaded.")
+        from icd_rag_bot.rag.openrouter_client import OpenRouterEmbedder
+        logger.info("Initialising OpenRouter embedder (text-embedding-3-small)...")
+        _embedder = OpenRouterEmbedder(api_key=settings.OPENROUTER_API_KEY, model="openai/text-embedding-3-small")
+        logger.info("OpenRouter embedder ready.")
     return _embedder
 
 
@@ -93,7 +93,7 @@ def icd_info():
     return ICDInfoResponse(
         index_name=settings.PINECONE_INDEX_NAME,
         namespace=settings.PINECONE_NAMESPACE,
-        embedding_model="all-MiniLM-L6-v2",
+                embedding_model="openai/text-embedding-3-small",
         llm_model=settings.OPENROUTER_MODEL,
     )
 

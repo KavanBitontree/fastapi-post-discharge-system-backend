@@ -7,7 +7,7 @@ load_dotenv()
 INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "icd10cm-2026")
 API_KEY = os.getenv("PINECONE_API_KEY")
 
-DIMENSION = 384   # for all-MiniLM-L6-v2
+DIMENSION = 1536  # for openai/text-embedding-3-small
 METRIC = "cosine"
 
 
