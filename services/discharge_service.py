@@ -67,10 +67,14 @@ def _upload_to_cloudinary(content: bytes, filename: str, doc_type: str, patient_
 
 def _process_report(db: Session, discharge: DischargeHistory, job: FileJob) -> None:
     from services.parsers.report_parser import parse_pdf_from_memory
+    from services.parsers.result_classifier import classify_report_results
     from services.db_store.store_report import check_duplicate_report, store_report, parse_date
 
     url = _upload_to_cloudinary(job.content, job.filename, "report", discharge.patient_id)
     validated = parse_pdf_from_memory(BytesIO(job.content), job.filename, strategy=job.strategy)
+
+    # Post-parse: classify normal vs abnormal from reference ranges (no LLM needed)
+    validated = classify_report_results(validated)
 
     if not validated.header.report_name or not validated.test_results:
         raise ValueError(
@@ -253,3 +257,32 @@ def run_discharge_queue(
         processed_bills=discharge.processed_bills,
         processed_prescriptions=discharge.processed_prescriptions,
     )
+
+
+# ── Background-task-safe runner ───────────────────────────────────────────────
+
+def run_discharge_queue_in_background(discharge_id: int, all_jobs: list[FileJob]) -> None:
+    """
+    Background-task-safe queue runner that manages its own DB session.
+
+    Use this with FastAPI BackgroundTasks so the HTTP response can be sent
+    immediately (202 Accepted) while processing continues asynchronously.
+    The DB is updated after every file, so the status polling endpoint
+    always reflects real-time progress.
+    """
+    from core.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        discharge = db.query(DischargeHistory).filter(DischargeHistory.id == discharge_id).first()
+        if not discharge:
+            logger.error("Background task: discharge id=%d not found", discharge_id)
+            return
+        run_discharge_queue(db, discharge, all_jobs)
+    except Exception as exc:
+        logger.error(
+            "Background task uncaught error for discharge %d: %s",
+            discharge_id, exc, exc_info=True,
+        )
+    finally:
+        db.close()
