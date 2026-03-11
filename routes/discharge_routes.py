@@ -1,9 +1,11 @@
 """
 routes/discharge_routes.py
 ---------------------------
-POST /api/discharge/process         → Upload all docs, process via queue, create discharge record
-POST /api/discharge/{id}/retry      → Resume from the failed file onward
-GET  /api/discharge/{id}/status     → Poll processing progress
+POST /api/discharge/process                     → Upload all docs, process via queue, create discharge record
+POST /api/discharge/{id}/retry                  → Resume from the failed file onward
+GET  /api/discharge/{id}/status                 → Poll processing progress
+GET  /api/discharge/{id}/pdfs                   → Get all generated PDF Cloudinary URLs
+GET  /api/discharge/patient/{patient_id}/pdfs   → Get PDF URLs for a patient's latest discharge
 
 Flow
 ----
@@ -32,6 +34,8 @@ from core.database import get_db
 from models.discharge_history import DischargeHistory
 from models.patient import Patient
 from services.discharge_service import DischargeResult, FileJob, run_discharge_queue
+from controllers.discharge_pdf_controller import DischargePdfController
+from schemas.discharge_schemas import DischargePdfsResponse
 
 logger = logging.getLogger(__name__)
 
@@ -265,3 +269,37 @@ def get_discharge_status(discharge_id: int, db: Session = Depends(get_db)):
             "prescriptions": discharge.processed_prescriptions,
         },
     }
+
+
+# ── GET /api/discharge/{discharge_id}/pdfs ────────────────────────────────────
+
+@router.get("/{discharge_id}/pdfs", response_model=DischargePdfsResponse)
+def get_discharge_pdfs(discharge_id: int, db: Session = Depends(get_db)):
+    """
+    Retrieve all generated PDF Cloudinary URLs for a specific discharge record.
+
+    Returns:
+    - **discharge_summary_url**: Cloudinary URL of the full hospital discharge summary PDF.
+    - **patient_friendly_summary_url**: Cloudinary URL of the simplified patient-friendly report PDF.
+    - **insurance_ready_url**: Cloudinary URL of the insurance-ready report PDF.
+
+    Returns 404 if the discharge does not exist or no PDFs have been generated yet.
+    """
+    return DischargePdfController.get_pdfs_by_discharge(db, discharge_id)
+
+
+# ── GET /api/discharge/patient/{patient_id}/pdfs ──────────────────────────────
+
+@router.get("/patient/{patient_id}/pdfs", response_model=DischargePdfsResponse)
+def get_patient_latest_discharge_pdfs(patient_id: int, db: Session = Depends(get_db)):
+    """
+    Retrieve PDF Cloudinary URLs for the **most recent** discharge record of a patient.
+
+    Returns:
+    - **discharge_summary_url**: Cloudinary URL of the full hospital discharge summary PDF.
+    - **patient_friendly_summary_url**: Cloudinary URL of the simplified patient-friendly report PDF.
+    - **insurance_ready_url**: Cloudinary URL of the insurance-ready report PDF.
+
+    Returns 404 if no discharge record is found for the patient or no PDFs exist yet.
+    """
+    return DischargePdfController.get_pdfs_by_patient(db, patient_id)

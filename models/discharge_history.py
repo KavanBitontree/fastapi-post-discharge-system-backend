@@ -20,7 +20,7 @@ class DischargeHistory(Base):
     discharge_summary_url = Column(String, nullable=True)
     patient_friendly_summary_url = Column(String, nullable=True)
     insurance_ready_url = Column(String, nullable=True)
- 
+
     # Relationships
     patient = relationship("Patient", back_populates="discharge_histories")
     bills = relationship("Bill", back_populates="discharge", cascade="all, delete-orphan")
@@ -29,3 +29,4 @@ class DischargeHistory(Base):
     doctors = relationship("PatientDoctor", back_populates="discharge", cascade="all, delete-orphan")
     telegram_sessions = relationship("TelegramSession", back_populates="discharge", cascade="all, delete-orphan")
     chat_history = relationship("ChatHistory", back_populates="discharge", cascade="all, delete-orphan")
+ 

@@ -3,7 +3,7 @@ services/reminder_service.py
 ------------------------------
 WhatsApp Medication Reminder — rewritten against real DB data.
 
-Real data findings (patient_id=3, 8 medications):
+Real data findings (discharge_id=3, 8 medications):
   - after_breakfast : Amlodipine, Furosemide, Aspirin, Folic Acid  → ONE grouped msg
   - after_lunch     : Losartan, Spironolactone                      → ONE grouped msg
   - after_dinner    : Losartan, Aspirin, Omega-3                    → ONE grouped msg
@@ -336,14 +336,21 @@ def run_reminder_for_slot(db: Session, slot: str) -> None:
         if s.discharge_id
     }
 
-    discharges = (
+    discharges: list[DischargeHistory] = (
         db.query(DischargeHistory)
-        .filter(DischargeHistory.id.in_(list(did_to_chat.keys())))
+        .options(joinedload(DischargeHistory.patient))
+        .filter(
+            DischargeHistory.id.in_(list(did_to_chat.keys())),
+        )
         .all()
     )
 
     sent_count = 0
     for discharge in discharges:
+        patient = discharge.patient
+        if not patient or not patient.is_active:
+            continue
+
         chat_id = did_to_chat.get(discharge.id)
         if not chat_id:
             continue
@@ -352,7 +359,7 @@ def run_reminder_for_slot(db: Session, slot: str) -> None:
         if not due:
             continue
 
-        message = build_telegram_message(discharge.patient, due, now)
+        message = build_telegram_message(patient, due, now)
         success = send_telegram_message(chat_id, message)
 
         if success:
@@ -406,9 +413,12 @@ def run_all_due_reminders(db: Session, window_minutes: int = 20) -> dict:
         if s.discharge_id
     }
 
-    discharges = (
+    discharges: list[DischargeHistory] = (
         db.query(DischargeHistory)
-        .filter(DischargeHistory.id.in_(list(did_to_chat.keys())))
+        .options(joinedload(DischargeHistory.patient))
+        .filter(
+            DischargeHistory.id.in_(list(did_to_chat.keys())),
+        )
         .all()
     )
 
@@ -419,8 +429,14 @@ def run_all_due_reminders(db: Session, window_minutes: int = 20) -> dict:
     skip_count = 0
 
     for discharge in discharges:
+        patient = discharge.patient
+        if not patient or not patient.is_active:
+            skip_count += 1
+            continue
+
         chat_id = did_to_chat.get(discharge.id)
         if not chat_id:
+            skip_count += 1
             continue
 
         today = now.date()
@@ -477,7 +493,7 @@ def run_all_due_reminders(db: Session, window_minutes: int = 20) -> dict:
             skip_count += 1
             continue
 
-        message = build_telegram_message(discharge.patient, due, now)
+        message = build_telegram_message(patient, due, now)
         success = send_telegram_message(chat_id, message)
 
         if success:

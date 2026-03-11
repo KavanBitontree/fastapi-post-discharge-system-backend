@@ -35,14 +35,15 @@ from routes import fetch_patient_routes
 from routes.report_routes import router as report_router
 from routes.bill_routes import router as bill_router
 from routes.prescription_routes import router as prescription_router
-app = FastAPI(docs_url=None,
-              swagger_ui_parameters={"persistAuthorization": True})
+from routes.patient_friendly_report_routes import router as patient_friendly_router
 from routes.reminder_routes import router as reminder_router   # ← new
 from routes.chat_routes import router as chat_router
 from routes.cron_reminder import router as cron_reminder_router
 from routes.discharge_routes import router as discharge_router
 from routes.icd_routes import router as icd_router
 from routes.ird_routes import router as ird_router
+from routes.admin_routes import router as admin_analytics_router
+from routes.patient_routes import router as patient_router
 
 
 @asynccontextmanager
@@ -83,12 +84,15 @@ app.include_router(router)
 app.include_router(report_router)
 app.include_router(bill_router)
 app.include_router(prescription_router)
+app.include_router(patient_friendly_router)
 app.include_router(reminder_router)   # ← new: /reminders/trigger
 app.include_router(chat_router)        # POST /chat
 app.include_router(cron_reminder_router)  # POST /cron/reminders
 app.include_router(discharge_router)      # POST /api/discharge/process
 app.include_router(icd_router)            # GET /icd/info  POST /icd/lookup
 app.include_router(ird_router)            # POST /api/discharge/{id}/generate-ird
+app.include_router(admin_analytics_router)  # GET /admin/dashboard, /admin/discharge-history, /admin/discharge/{id}/documents
+app.include_router(patient_router)          # GET /patient/profile, PATCH /patient/profile, GET /patient/dashboard, etc.
 
 
 @app.get("/")

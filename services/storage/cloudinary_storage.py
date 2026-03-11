@@ -35,7 +35,6 @@ class CloudinaryStorage:
         "report": "medical_documents/reports",
         "bill": "medical_documents/bills",
         "prescription": "medical_documents/prescriptions",
-        "ird": "ird_documents",
     }
    
     @classmethod
@@ -167,7 +166,7 @@ class CloudinaryStorage:
             Cloudinary public_id of the file
         resource_type : str
             'image' for PDFs and images (Cloudinary serves PDFs with correct content-type under 'image')
-           
+            
         Returns
         -------
         dict
@@ -178,7 +177,7 @@ class CloudinaryStorage:
             resource_type=resource_type,
         )
         return result
-   
+    
 @classmethod
 def get_file_url(cls, public_id: str, resource_type: str = "image") -> str:
         """
@@ -190,15 +189,15 @@ def get_file_url(cls, public_id: str, resource_type: str = "image") -> str:
             Cloudinary public_id
         resource_type : str
             'image' for PDFs and images
-       
+        
         Returns
         -------
         str
             Secure URL
         """
         return cloudinary.CloudinaryImage(public_id).build_url(secure=True)
- 
- 
+
+
 # Convenience functions
 def upload_medical_pdf(
     file: BinaryIO,
@@ -218,10 +217,9 @@ def upload_medical_image(
 ) -> dict:
     """Upload medical image to Cloudinary."""
     return CloudinaryStorage.upload_image(file, filename, document_type, patient_id)
- 
- 
+
+
 def delete_medical_file(public_id: str, resource_type: str = "image") -> dict:
     """Delete medical file from Cloudinary."""
     return CloudinaryStorage.delete_file(public_id, resource_type)
- 
  
