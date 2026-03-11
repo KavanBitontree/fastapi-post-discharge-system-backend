@@ -14,6 +14,8 @@ from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
 from io import BytesIO
 from datetime import datetime
 import re
+import markdown as _md_lib
+from bs4 import BeautifulSoup, NavigableString, Tag
 
 
 def clean_text(text):
@@ -44,6 +46,126 @@ def clean_text(text):
         text = text.replace(old, new)
     
     return text
+
+
+def _node_to_rl_xml(node):
+    """
+    Recursively convert a BeautifulSoup node to a ReportLab-safe XML string.
+    Inline tags are mapped: strong/b -> <b>, em/i -> <i>, code -> Courier font.
+    All text content is properly XML-escaped for ReportLab's Paragraph parser.
+    """
+    if isinstance(node, NavigableString):
+        # BS4 already decoded HTML entities; re-escape for ReportLab XML
+        s = str(node)
+        s = s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        return s
+    if not isinstance(node, Tag):
+        return ''
+    inner = ''.join(_node_to_rl_xml(child) for child in node.children)
+    tag = node.name
+    if tag in ('strong', 'b'):
+        return f'<b>{inner}</b>'
+    elif tag in ('em', 'i'):
+        return f'<i>{inner}</i>'
+    elif tag == 'code':
+        return f'<font face="Courier">{inner}</font>'
+    elif tag == 'br':
+        return '<br/>'
+    else:
+        return inner
+
+
+def _normalize_md(text):
+    """
+    Pre-process LLM output to ensure numbered list items are on separate lines.
+    LLMs often return inline numbered lists like "text 2. Next item 3. Another"
+    which markdown cannot parse as a list without explicit newlines.
+    Only splits before items that start with a capital letter to avoid breaking
+    mid-sentence numbers like "take 2.5 mg" or "in 2 weeks".
+    """
+    if not text:
+        return text
+    # Insert a blank line before numbered list markers that appear mid-line.
+    # Matches: (non-newline)(spaces)(digits + period + space + Capital letter)
+    text = re.sub(r'(?<!\n)([ \t]+)(\d+)\.\s+(?=[A-Z])', r'\n\2. ', text)
+    return text
+
+
+def _md_to_rl_xml(text):
+    """
+    Convert a single markdown string to a ReportLab XML inline string.
+    Suitable for embedding inside a Paragraph (e.g. a list item).
+    Block wrappers (<p>, <li>) are unwrapped; only inline formatting is kept.
+    """
+    if not text or not text.strip():
+        return ''
+    text = _normalize_md(text)
+    html = _md_lib.markdown(text)
+    soup = BeautifulSoup(html, 'html.parser')
+    parts = []
+    for element in soup.children:
+        if isinstance(element, NavigableString):
+            s = str(element).strip()
+            if s:
+                parts.append(s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;'))
+        elif isinstance(element, Tag):
+            if element.name in ('ul', 'ol'):
+                for li in element.find_all('li', recursive=False):
+                    parts.append(''.join(_node_to_rl_xml(child) for child in li.children))
+            else:
+                parts.append(''.join(_node_to_rl_xml(child) for child in element.children))
+    return ' '.join(p for p in parts if p.strip())
+
+
+def _md_to_flowables(text, base_style, bullet_prefix='&#8226;', limit=None):
+    """
+    Convert a markdown text block to a list of ReportLab Paragraph flowables.
+    Each block element (p, li, heading) becomes its own Paragraph.
+    Inline formatting (bold, italic, code) is converted to ReportLab XML tags.
+    """
+    if not text or not text.strip():
+        return []
+    text = _normalize_md(text)
+    html = _md_lib.markdown(text)
+    soup = BeautifulSoup(html, 'html.parser')
+    flowables = []
+
+    def _add(rl_xml):
+        if rl_xml and rl_xml.strip():
+            flowables.append(Paragraph(rl_xml, base_style))
+
+    for element in soup.children:
+        if limit and len(flowables) >= limit:
+            break
+        if isinstance(element, NavigableString):
+            s = str(element).strip()
+            if s:
+                _add(s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;'))
+        elif isinstance(element, Tag):
+            name = element.name
+            if name == 'ol':
+                for idx, li in enumerate(element.find_all('li', recursive=False), start=1):
+                    inner = ''.join(_node_to_rl_xml(child) for child in li.children)
+                    _add(f'<b>{idx}.</b> {inner}')
+                    if limit and len(flowables) >= limit:
+                        break
+            elif name == 'ul':
+                for li in element.find_all('li', recursive=False):
+                    inner = ''.join(_node_to_rl_xml(child) for child in li.children)
+                    _add(f'{bullet_prefix} {inner}')
+                    if limit and len(flowables) >= limit:
+                        break
+            elif name == 'p':
+                inner = ''.join(_node_to_rl_xml(child) for child in element.children)
+                _add(inner)
+            elif name in ('h1', 'h2', 'h3', 'h4', 'h5', 'h6'):
+                inner = ''.join(_node_to_rl_xml(child) for child in element.children)
+                _add(f'<b>{inner}</b>')
+            else:
+                inner = ''.join(_node_to_rl_xml(child) for child in element.children)
+                _add(inner)
+
+    return flowables[:limit] if limit else flowables
 
 
 def generate_patient_friendly_pdf(report_data: dict) -> BytesIO:
@@ -187,12 +309,10 @@ def generate_patient_friendly_pdf(report_data: dict) -> BytesIO:
     story.append(summary_header_table)
     story.append(Spacer(1, 0.08*inch))
     
-    # Summary text - cleaned and converted to bullet points
+    # Summary text - parse markdown and render with inline formatting preserved
     summary_text = clean_text(report_data.get('summary', ''))
-    # Extract key sentences from summary
-    sentences = [s.strip() for s in summary_text.split('.') if s.strip() and len(s.strip()) > 20]
-    for i, sentence in enumerate(sentences[:6]):  # Limit to 6 key points (was 4)
-        story.append(Paragraph(f"* {sentence}.", bullet_style))
+    for para in _md_to_flowables(summary_text, bullet_style, bullet_prefix='&#8226;', limit=6):
+        story.append(para)
     story.append(Spacer(1, 0.12*inch))
     
     # ===== KEY POINTS SECTION =====
@@ -212,8 +332,9 @@ def generate_patient_friendly_pdf(report_data: dict) -> BytesIO:
     story.append(Spacer(1, 0.06*inch))
     
     for point in report_data.get('key_points', [])[:5]:  # Limit to 5 key points (was 3)
-        cleaned_point = clean_text(point)
-        story.append(Paragraph(f"* {cleaned_point}", bullet_style))
+        rl_xml = _md_to_rl_xml(clean_text(point))
+        if rl_xml:
+            story.append(Paragraph(f'&#8226; {rl_xml}', bullet_style))
     story.append(Spacer(1, 0.12*inch))
     
     # ===== MEDICATIONS SECTION =====
@@ -233,8 +354,9 @@ def generate_patient_friendly_pdf(report_data: dict) -> BytesIO:
     story.append(Spacer(1, 0.06*inch))
     
     for med in report_data.get('medications', [])[:8]:  # Limit to 8 medications (was 5)
-        cleaned_med = clean_text(med)
-        story.append(Paragraph(f"- {cleaned_med}", med_style))
+        rl_xml = _md_to_rl_xml(clean_text(med))
+        if rl_xml:
+            story.append(Paragraph(f'- {rl_xml}', med_style))
     story.append(Spacer(1, 0.12*inch))
     
     # ===== FOLLOW-UP INSTRUCTIONS SECTION =====
@@ -254,10 +376,8 @@ def generate_patient_friendly_pdf(report_data: dict) -> BytesIO:
     story.append(Spacer(1, 0.06*inch))
     
     followup_text = clean_text(report_data.get('follow_up_instructions', ''))
-    # Extract key sentences from follow-up
-    followup_sentences = [s.strip() for s in followup_text.split('.') if s.strip() and len(s.strip()) > 15]
-    for sentence in followup_sentences[:5]:  # Limit to 5 key steps (was 3)
-        story.append(Paragraph(f"* {sentence}.", bullet_style))
+    for para in _md_to_flowables(followup_text, bullet_style, bullet_prefix='&#8226;', limit=5):
+        story.append(para)
     story.append(Spacer(1, 0.12*inch))
     
     # ===== WARNING SIGNS SECTION =====
@@ -277,8 +397,9 @@ def generate_patient_friendly_pdf(report_data: dict) -> BytesIO:
     story.append(Spacer(1, 0.06*inch))
     
     for sign in report_data.get('warning_signs', [])[:6]:  # Limit to 6 warning signs (was 4)
-        cleaned_sign = clean_text(sign)
-        story.append(Paragraph(f"! {cleaned_sign}", warning_style))
+        rl_xml = _md_to_rl_xml(clean_text(sign))
+        if rl_xml:
+            story.append(Paragraph(f'! {rl_xml}', warning_style))
     
     story.append(Spacer(1, 0.15*inch))
     
