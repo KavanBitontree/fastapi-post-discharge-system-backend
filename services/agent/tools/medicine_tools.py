@@ -73,7 +73,7 @@ def _med_header(m: Medication, today: date) -> str:
     )
 
 
-def build_medicine_tools(patient_id: int, db: Session) -> list:
+def build_medicine_tools(discharge_id: int, db: Session) -> list:
 
     @tool
     def get_all_medications() -> str:
@@ -88,7 +88,7 @@ def build_medicine_tools(patient_id: int, db: Session) -> list:
                 joinedload(Medication.recurrence),
                 joinedload(Medication.doctor),
             )
-            .filter(Medication.patient_id == patient_id, Medication.is_active == True)
+            .filter(Medication.discharge_id == discharge_id, Medication.is_active == True)
             .all()
         )
         if not meds:
@@ -110,7 +110,7 @@ def build_medicine_tools(patient_id: int, db: Session) -> list:
         meds = (
             db.query(Medication)
             .options(joinedload(Medication.schedule))
-            .filter(Medication.patient_id == patient_id, Medication.is_active == True)
+            .filter(Medication.discharge_id == discharge_id, Medication.is_active == True)
             .all()
         )
         if not meds:
@@ -140,7 +140,7 @@ def build_medicine_tools(patient_id: int, db: Session) -> list:
                 joinedload(Medication.doctor),
             )
             .filter(
-                Medication.patient_id == patient_id,
+                Medication.discharge_id == discharge_id,
                 Medication.drug_name.ilike(f"%{drug_name}%"),
                 Medication.is_active == True,
             )
@@ -160,7 +160,7 @@ def build_medicine_tools(patient_id: int, db: Session) -> list:
         meds = (
             db.query(Medication)
             .options(joinedload(Medication.schedule))
-            .filter(Medication.patient_id == patient_id, Medication.is_active == True)
+            .filter(Medication.discharge_id == discharge_id, Medication.is_active == True)
             .all()
         )
         results = []
@@ -190,7 +190,7 @@ def build_medicine_tools(patient_id: int, db: Session) -> list:
         meds = (
             db.query(Medication)
             .options(joinedload(Medication.schedule))
-            .filter(Medication.patient_id == patient_id, Medication.is_active == True)
+            .filter(Medication.discharge_id == discharge_id, Medication.is_active == True)
             .all()
         )
         now = datetime.now(TIMEZONE)
@@ -229,7 +229,7 @@ def build_medicine_tools(patient_id: int, db: Session) -> list:
         meds = (
             db.query(Medication)
             .options(joinedload(Medication.schedule), joinedload(Medication.recurrence))
-            .filter(Medication.patient_id == patient_id, Medication.is_active == True)
+            .filter(Medication.discharge_id == discharge_id, Medication.is_active == True)
             .all()
         )
 
@@ -272,7 +272,7 @@ def build_medicine_tools(patient_id: int, db: Session) -> list:
                 joinedload(Medication.recurrence),
                 joinedload(Medication.doctor),
             )
-            .filter(Medication.patient_id == patient_id)
+            .filter(Medication.discharge_id == discharge_id)
             .order_by(Medication.prescription_date.desc().nullslast(), Medication.created_at.desc())
             .all()
         )

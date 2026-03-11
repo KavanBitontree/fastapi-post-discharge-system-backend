@@ -56,15 +56,15 @@ def _desc_line(d: ReportDescription, report: Report | None = None) -> str:
     ).rstrip()
 
 
-def build_report_tools(patient_id: int, db: Session) -> list:
+def build_report_tools(discharge_id: int, db: Session) -> list:
     """
-    Factory — returns tool list bound to this patient's session.
+    Factory — returns tool list bound to this discharge's session.
     Called once per request when building the graph.
     """
 
     # Pre-build a report lookup so section/test-name searches can attach report context cheaply
     def _report_map() -> dict[int, Report]:
-        rows = db.query(Report).filter(Report.patient_id == patient_id).all()
+        rows = db.query(Report).filter(Report.discharge_id == discharge_id).all()
         return {r.id: r for r in rows}
 
     @tool
@@ -75,7 +75,7 @@ def build_report_tools(patient_id: int, db: Session) -> list:
         """
         reports = (
             db.query(Report)
-            .filter(Report.patient_id == patient_id)
+            .filter(Report.discharge_id == discharge_id)
             .order_by(Report.report_date.desc())
             .all()
         )
@@ -111,7 +111,7 @@ def build_report_tools(patient_id: int, db: Session) -> list:
         reports = (
             db.query(Report)
             .filter(
-                Report.patient_id == patient_id,
+                Report.discharge_id == discharge_id,
                 Report.report_name.ilike(f"%{report_name}%"),
             )
             .order_by(Report.report_date.desc())
@@ -143,7 +143,7 @@ def build_report_tools(patient_id: int, db: Session) -> list:
             db.query(ReportDescription)
             .join(Report, Report.id == ReportDescription.report_id)
             .filter(
-                Report.patient_id == patient_id,
+                Report.discharge_id == discharge_id,
                 ReportDescription.section.ilike(f"%{report_name}%"),
             )
             .order_by(Report.report_date.desc())
@@ -160,7 +160,7 @@ def build_report_tools(patient_id: int, db: Session) -> list:
             db.query(ReportDescription)
             .join(Report, Report.id == ReportDescription.report_id)
             .filter(
-                Report.patient_id == patient_id,
+                Report.discharge_id == discharge_id,
                 ReportDescription.test_name.ilike(f"%{report_name}%"),
             )
             .order_by(Report.report_date.desc())
@@ -187,7 +187,7 @@ def build_report_tools(patient_id: int, db: Session) -> list:
             db.query(ReportDescription)
             .join(Report, Report.id == ReportDescription.report_id)
             .filter(
-                Report.patient_id == patient_id,
+                Report.discharge_id == discharge_id,
                 ReportDescription.flag.isnot(None),
                 ReportDescription.flag != "",
             )
@@ -215,7 +215,7 @@ def build_report_tools(patient_id: int, db: Session) -> list:
         report = (
             db.query(Report)
             .filter(
-                Report.patient_id == patient_id,
+                Report.discharge_id == discharge_id,
                 Report.report_name.ilike(f"%{report_name}%"),
             )
             .order_by(Report.report_date.desc())
@@ -260,7 +260,7 @@ def build_report_tools(patient_id: int, db: Session) -> list:
             db.query(ReportDescription)
             .join(Report, Report.id == ReportDescription.report_id)
             .filter(
-                Report.patient_id == patient_id,
+                Report.discharge_id == discharge_id,
                 ReportDescription.section.ilike(f"%{section_name}%"),
             )
             .order_by(Report.report_date.desc())
@@ -284,7 +284,7 @@ def build_report_tools(patient_id: int, db: Session) -> list:
         """
         reports = (
             db.query(Report)
-            .filter(Report.patient_id == patient_id)
+            .filter(Report.discharge_id == discharge_id)
             .order_by(Report.report_date.desc())
             .all()
         )

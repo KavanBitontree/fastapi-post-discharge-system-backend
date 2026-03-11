@@ -44,10 +44,11 @@ from sqlalchemy.orm import Session
 
 from core.database import SessionLocal
 from core.enums import SessionStatus
+from models.discharge_history import DischargeHistory
 from models.patient import Patient
 from models.telegram_session import TelegramSession
 from services.telegram.otp import generate_otp, send_otp_sms
-from services.telegram.sender import get_updates, send_message, set_my_commands
+from services.telegram.sender import get_updates, send_message, send_placeholder, edit_message, set_my_commands
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,7 @@ MAX_ATTEMPTS       = 3
 # ── Bot reply templates (HTML) ────────────────────────────────────────────────
 
 _WELCOME = (
-    "👋 Welcome to <b>Post-Discharge Care Bot</b>!\n\n"
+    "👋 Welcome to <b>Medicare Bot</b>!\n\n"
     "I can help you with:\n"
     "  💊 Medication reminders &amp; queries\n"
     "  🧪 Lab report results\n"
@@ -224,12 +225,20 @@ def _issue_otp(db: Session, sess: TelegramSession, patient: Patient) -> bool:
     now = datetime.now(TIMEZONE)
     exp = now + timedelta(minutes=OTP_EXPIRY_MINUTES)
 
+    # Find the most recent discharge for this patient
+    discharge = (
+        db.query(DischargeHistory)
+        .filter(DischargeHistory.patient_id == patient.id)
+        .order_by(DischargeHistory.created_at.desc())
+        .first()
+    )
+
     sess.otp            = otp
     sess.otp_created_at = now
     sess.otp_expires_at = exp
     sess.attempts       = MAX_ATTEMPTS
     sess.phone_number   = patient.phone_number
-    sess.patient_id     = patient.id
+    sess.discharge_id   = discharge.id if discharge else None
     sess.session_status = SessionStatus.AWAIT_OTP
     db.commit()
 
@@ -239,10 +248,10 @@ def _issue_otp(db: Session, sess: TelegramSession, patient: Patient) -> bool:
 # ── State handlers ────────────────────────────────────────────────────────────
 
 def _handle_await_mobile(db: Session, sess: TelegramSession, chat_id: str, text: str) -> None:
-    cmd = text.split()[0].lower() if text else ""
+    cmd = text.split()[0].lower().split("@")[0] if text else ""
 
     if cmd in ("/start", "/help"):
-        send_message(chat_id, _HELP if cmd == "/help" else _ASK_MOBILE)
+        send_message(chat_id, _HELP if cmd == "/help" else _WELCOME)
         return
 
     phone = _extract_phone(text)
@@ -268,18 +277,19 @@ def _handle_await_mobile(db: Session, sess: TelegramSession, chat_id: str, text:
 
 
 def _handle_await_otp(db: Session, sess: TelegramSession, chat_id: str, text: str) -> None:
-    cmd = text.split()[0].lower() if text else ""
+    cmd = text.split()[0].lower().split("@")[0] if text else ""
 
     if cmd == "/restart":
         sess.session_status = SessionStatus.AWAIT_MOBILE
         sess.otp            = None
-        sess.patient_id     = None
+        sess.discharge_id   = None
         db.commit()
         send_message(chat_id, _ASK_MOBILE)
         return
 
     if cmd == "/resend":
-        patient = sess.patient_id and db.query(Patient).filter(Patient.id == sess.patient_id).first()
+        discharge = sess.discharge_id and db.query(DischargeHistory).filter(DischargeHistory.id == sess.discharge_id).first()
+        patient = discharge.patient if discharge else None
         if patient:
             _issue_otp(db, sess, patient)
             last4 = _digits_only(patient.phone_number or "")[-4:]
@@ -315,7 +325,7 @@ def _handle_await_otp(db: Session, sess: TelegramSession, chat_id: str, text: st
             # Reset so they can /restart
             sess.session_status = SessionStatus.AWAIT_MOBILE
             sess.otp            = None
-            sess.patient_id     = None
+            sess.discharge_id   = None
             db.commit()
             send_message(chat_id, _TOO_MANY)
         else:
@@ -323,7 +333,8 @@ def _handle_await_otp(db: Session, sess: TelegramSession, chat_id: str, text: st
         return
 
     # ── Correct OTP → mark VERIFIED ──────────────────────────────────────────
-    patient = db.query(Patient).filter(Patient.id == sess.patient_id).first()
+    discharge = db.query(DischargeHistory).filter(DischargeHistory.id == sess.discharge_id).first()
+    patient = discharge.patient if discharge else None
     sess.session_status = SessionStatus.VERIFIED
     sess.verified_at    = now
     sess.otp            = None       # clear after use
@@ -335,57 +346,92 @@ def _handle_await_otp(db: Session, sess: TelegramSession, chat_id: str, text: st
 
 def _handle_verified(db: Session, sess: TelegramSession, chat_id: str, text: str) -> None:
     """Route message to LangGraph agent and reply with AI response."""
-    cmd = text.split()[0].lower() if text else ""
+    cmd = text.split()[0].lower().split("@")[0] if text else ""
 
     if cmd in ("/start", "/help"):
-        patient = db.query(Patient).filter(Patient.id == sess.patient_id).first()
-        name = patient.full_name if patient else "Patient"
+        discharge = db.query(DischargeHistory).filter(DischargeHistory.id == sess.discharge_id).first()
+        name = discharge.patient.full_name if discharge and discharge.patient else "Patient"
         send_message(chat_id, _ALREADY_VERIFIED.format(name=name) if cmd == "/start" else _HELP)
         return
 
-    patient_id = sess.patient_id
-    if not patient_id:
+    discharge_id = sess.discharge_id
+    if not discharge_id:
         send_message(chat_id, _AGENT_ERROR)
         return
 
+    placeholder_id: int | None = None
     try:
         # Import here to avoid circular imports at module load time
         from services.agent.graph import build_agent_graph
         from services.agent.chat_history_service import fetch_last_10, save_turn
         from services.agent.state import AgentState
 
-        history  = fetch_last_10(patient_id, db)
-        now_str  = datetime.now(TIMEZONE).strftime("%A, %d %b %Y, %I:%M %p IST")
-        initial_state: AgentState = {
-            "patient_id":       patient_id,
-            "user_msg":         text.strip(),
-            "current_datetime": now_str,
-            "chat_history":     history,
-            "intents":          [],
-            "pending_intents":  [],
-            "node_responses":   {},
-            "final_answer":     None,
-            "call_counts":      {},
-            "total_calls":      0,
-            "error":            None,
-        }
+        # Show animated thinking dots in the placeholder bubble (•  →  ••  →  •••)
+        placeholder_id = send_placeholder(chat_id, "•")
+        _typing_stop = threading.Event()
+        _DOT_FRAMES = ("•", "••", "•••")
 
-        graph  = build_agent_graph(patient_id, db)
-        result: AgentState = graph.invoke(initial_state)
+        def _animate():
+            frame = 1  # placeholder already shows frame 0 ("•")
+            while not _typing_stop.is_set():
+                _typing_stop.wait(0.7)  # ≤1 edit/s keeps us under Telegram's rate limit
+                if _typing_stop.is_set():
+                    break
+                edit_message(chat_id, placeholder_id, _DOT_FRAMES[frame % 3])
+                frame += 1
+
+        typing_thread = threading.Thread(target=_animate, daemon=True)
+        typing_thread.start()
+
+        try:
+            history  = fetch_last_10(discharge_id, db)
+            now_str  = datetime.now(TIMEZONE).strftime("%A, %d %b %Y, %I:%M %p IST")
+            initial_state: AgentState = {
+                "discharge_id":     discharge_id,
+                "user_msg":         text.strip(),
+                "current_datetime": now_str,
+                "chat_history":     history,
+                "intents":          [],
+                "pending_intents":  [],
+                "node_responses":   {},
+                "final_answer":     None,
+                "call_counts":      {},
+                "total_calls":      0,
+                "error":            None,
+            }
+
+            graph  = build_agent_graph(discharge_id, db)
+            result: AgentState = graph.invoke(initial_state)
+        finally:
+            _typing_stop.set()
+            typing_thread.join(timeout=2)  # wait for any in-flight edit to finish
 
         answer = result.get("final_answer") or (
             "I'm sorry, that's outside my scope. "
             "I can help with reports, bills, medications, and doctors."
         )
-        save_turn(patient_id, text, answer, db)
+        save_turn(discharge_id, text, answer, db)
 
-        # Telegram has 4096-char message limit — split if needed
-        for chunk in _split_message(answer):
-            send_message(chat_id, chunk)
+        chunks = _split_message(answer)
+
+        if placeholder_id is not None:
+            # Replace the • bubble with the real answer in-place
+            if not edit_message(chat_id, placeholder_id, chunks[0]):
+                logger.warning("edit_message failed for chat=%s; answer may not have shown", chat_id)
+            for chunk in chunks[1:]:
+                send_message(chat_id, chunk)
+        else:
+            # Placeholder send failed — just send all chunks normally
+            for chunk in chunks:
+                send_message(chat_id, chunk)
 
     except Exception as exc:
-        logger.error("LangGraph error for Telegram patient %s: %s", patient_id, exc, exc_info=True)
-        send_message(chat_id, _AGENT_ERROR)
+        logger.error("LangGraph error for Telegram discharge %s: %s", discharge_id, exc, exc_info=True)
+        # Replace placeholder with error message so it never stays stuck
+        if placeholder_id is not None and not edit_message(chat_id, placeholder_id, _AGENT_ERROR):
+            send_message(chat_id, _AGENT_ERROR)
+        elif placeholder_id is None:
+            send_message(chat_id, _AGENT_ERROR)
 
 
 def _split_message(text: str, limit: int = 4000) -> list[str]:
@@ -414,7 +460,12 @@ def handle_update(update: dict) -> None:
     chat_id = str(message["chat"]["id"])
     text    = (message.get("text") or "").strip()
     if not text:
-        return  # ignore photos, stickers, voice, etc.
+        send_message(
+            chat_id,
+            "🤖 I can only understand <b>text messages</b>.\n\n"
+            "Please type your question and I'll be happy to help!",
+        )
+        return
 
     db: Session = SessionLocal()
     try:
@@ -455,7 +506,16 @@ _bot_thread: threading.Thread | None = None
 def _polling_loop() -> None:
     logger.info("🤖 Telegram bot polling started")
     set_my_commands()
-    offset = 0
+
+    # Drain any updates that accumulated while the server was offline so we
+    # never replay stale messages from a previous session on restart.
+    pending = get_updates(offset=0, timeout=0)
+    if pending:
+        offset = pending[-1]["update_id"] + 1
+        logger.info("Skipped %d stale update(s) from previous session (offset → %d)", len(pending), offset)
+    else:
+        offset = 0
+
     _conflict_warned = False
 
     while not _stop_event.is_set():

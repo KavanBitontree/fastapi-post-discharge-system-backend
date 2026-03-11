@@ -18,6 +18,47 @@ logger = logging.getLogger(__name__)
 _BASE = f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}"
 
 
+def send_placeholder(chat_id: str | int, text: str = "...") -> int | None:
+    """
+    Send an immediate placeholder message (e.g. ...) and return its message_id.
+    Returns None on failure.
+    """
+    try:
+        r = httpx.post(
+            f"{_BASE}/sendMessage",
+            json={"chat_id": chat_id, "text": text},
+            timeout=10,
+        )
+        r.raise_for_status()
+        return r.json()["result"]["message_id"]
+    except Exception as exc:
+        logger.warning("send_placeholder failed: %s", exc)
+        return None
+
+
+def edit_message(chat_id: str | int, message_id: int, text: str, parse_mode: str = "HTML") -> bool:
+    """
+    Edit an existing message in-place (replaces the placeholder with the real answer).
+    Falls back gracefully if the message can't be edited.
+    """
+    try:
+        r = httpx.post(
+            f"{_BASE}/editMessageText",
+            json={
+                "chat_id":    chat_id,
+                "message_id": message_id,
+                "text":       text,
+                "parse_mode": parse_mode,
+            },
+            timeout=10,
+        )
+        r.raise_for_status()
+        return True
+    except Exception as exc:
+        logger.warning("edit_message failed (chat=%s, msg=%s): %s", chat_id, message_id, exc)
+        return False
+
+
 def send_message(chat_id: str | int, text: str, parse_mode: str = "HTML") -> bool:
     """
     Send a text message to a Telegram chat.

@@ -27,8 +27,16 @@ class Settings(BaseSettings):
     TWILIO_AUTH_TOKEN: str
     TWILIO_FROM_NUMBER: str
 
+    # ICD-10 RAG
+    PINECONE_API_KEY: str
+    PINECONE_INDEX_NAME: str = "icd10cm-2026"
+    PINECONE_NAMESPACE: str = "icd10cm_2026"
+    OPENROUTER_API_KEY: str
+    OPENROUTER_MODEL: str = "google/gemini-2.5-flash"
+
     class Config:
         env_file = _ENV_FILE
+        extra = "ignore"  # ignore unknown vars like HF_HUB_DISABLE_SYMLINKS_WARNING
 
 
 settings = Settings()
