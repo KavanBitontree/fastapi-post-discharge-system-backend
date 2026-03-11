@@ -45,7 +45,7 @@ def cron_reminders(db: Session = Depends(get_db)):
     Sends Telegram medication reminders to all verified patients with a
     20-minute delivery window.
     """
-    result = run_all_due_reminders(db, window_minutes=5)
+    result = run_all_due_reminders(db, window_minutes=20)
     return {
         "message": "Cron reminder job completed.",
         "notified": result["notified"],
