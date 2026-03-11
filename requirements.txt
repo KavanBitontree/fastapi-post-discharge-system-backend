@@ -15,7 +15,6 @@ pymupdf
 langchain
 langchain-core
 langchain-groq
-langchain-huggingface
 huggingface_hub
 
 # Cloud Storage
