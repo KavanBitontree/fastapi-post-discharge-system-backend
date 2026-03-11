@@ -460,7 +460,12 @@ def handle_update(update: dict) -> None:
     chat_id = str(message["chat"]["id"])
     text    = (message.get("text") or "").strip()
     if not text:
-        return  # ignore photos, stickers, voice, etc.
+        send_message(
+            chat_id,
+            "🤖 I can only understand <b>text messages</b>.\n\n"
+            "Please type your question and I'll be happy to help!",
+        )
+        return
 
     db: Session = SessionLocal()
     try:
