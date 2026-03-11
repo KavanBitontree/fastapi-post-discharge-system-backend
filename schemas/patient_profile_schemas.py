@@ -57,6 +57,9 @@ class PatientDischargeHistoryItem(BaseModel):
     processed_reports: int
     processed_bills: int
     processed_prescriptions: int
+    discharge_summary_url: Optional[str]
+    patient_friendly_summary_url: Optional[str]
+    insurance_ready_url: Optional[str]
 
 
 class PatientDischargeHistoryResponse(BaseModel):
@@ -102,3 +105,14 @@ class PatientDischargeDocumentsResponse(BaseModel):
     reports: List[ReportItem]
     bills: List[BillItem]
     medications: List[MedicationItem]
+
+
+# ── Discharge PDFs ─────────────────────────────────────────────────────────────
+
+class PatientDischargePdfsResponse(BaseModel):
+    discharge_id: int
+    discharge_date: Optional[str]
+    status: str
+    discharge_summary_url: Optional[str]
+    patient_friendly_summary_url: Optional[str]
+    insurance_ready_url: Optional[str]

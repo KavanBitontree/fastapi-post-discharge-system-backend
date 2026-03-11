@@ -7,6 +7,29 @@ from models.report import Report
 from typing import Optional
 
 
+def _get_discharge_pdfs_for_patient(db: Session, patient_id: int, discharge_id: int):
+    """Return discharge PDF URLs for a patient-owned discharge record."""
+    discharge = (
+        db.query(DischargeHistory)
+        .filter(
+            DischargeHistory.id == discharge_id,
+            DischargeHistory.patient_id == patient_id,
+            DischargeHistory.status == "completed",
+        )
+        .first()
+    )
+    if not discharge:
+        return None
+    return {
+        "discharge_id": discharge.id,
+        "discharge_date": str(discharge.discharge_date) if discharge.discharge_date else None,
+        "status": discharge.status,
+        "discharge_summary_url": discharge.discharge_summary_url,
+        "patient_friendly_summary_url": discharge.patient_friendly_summary_url,
+        "insurance_ready_url": discharge.insurance_ready_url,
+    }
+
+
 class PatientProfileService:
 
     @staticmethod
@@ -147,6 +170,9 @@ class PatientProfileService:
                 "processed_reports": d.processed_reports,
                 "processed_bills": d.processed_bills,
                 "processed_prescriptions": d.processed_prescriptions,
+                "discharge_summary_url": d.discharge_summary_url,
+                "patient_friendly_summary_url": d.patient_friendly_summary_url,
+                "insurance_ready_url": d.insurance_ready_url,
             }
             for d in items
         ]
@@ -219,4 +245,54 @@ class PatientProfileService:
             "reports": reports,
             "bills": bills,
             "medications": medications,
+        }
+
+    @staticmethod
+    def get_discharge_pdfs(db: Session, patient_id: int, discharge_id: int):
+        """Return PDF Cloudinary URLs for a patient-owned discharge record."""
+        discharge = (
+            db.query(DischargeHistory)
+            .filter(
+                DischargeHistory.id == discharge_id,
+                DischargeHistory.patient_id == patient_id,
+                DischargeHistory.status == "completed",
+            )
+            .first()
+        )
+        if not discharge:
+            return None
+        return {
+            "discharge_id": discharge.id,
+            "discharge_date": (
+                str(discharge.discharge_date) if discharge.discharge_date else None
+            ),
+            "status": discharge.status,
+            "discharge_summary_url": discharge.discharge_summary_url,
+            "patient_friendly_summary_url": discharge.patient_friendly_summary_url,
+            "insurance_ready_url": discharge.insurance_ready_url,
+        }
+
+    @staticmethod
+    def get_latest_discharge_pdfs(db: Session, patient_id: int):
+        """Return PDF URLs for the patient's most recent completed discharge."""
+        discharge = (
+            db.query(DischargeHistory)
+            .filter(
+                DischargeHistory.patient_id == patient_id,
+                DischargeHistory.status == "completed",
+            )
+            .order_by(desc(DischargeHistory.created_at))
+            .first()
+        )
+        if not discharge:
+            return None
+        return {
+            "discharge_id": discharge.id,
+            "discharge_date": (
+                str(discharge.discharge_date) if discharge.discharge_date else None
+            ),
+            "status": discharge.status,
+            "discharge_summary_url": discharge.discharge_summary_url,
+            "patient_friendly_summary_url": discharge.patient_friendly_summary_url,
+            "insurance_ready_url": discharge.insurance_ready_url,
         }

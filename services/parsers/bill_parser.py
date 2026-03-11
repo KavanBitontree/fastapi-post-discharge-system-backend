@@ -94,40 +94,6 @@ def parse_bill_pdf_from_memory(pdf_buffer: BinaryIO, filename: str, strategy: st
         merge_function=merge_bill_results,
         strategy=strategy,
     )
-    """
-    Extract bill data from PDF using LLM with dynamic chunking.
-    
-    Parameters
-    ----------
-    pdf_path : str
-        Path to PDF file
-    strategy : str
-        "auto" – auto-detect PDF type (default)
-        "text" – force text-based extraction
-        "vision" – force vision extraction
-    
-    Returns
-    -------
-    ParsedBill
-        Parsed bill with all extracted information
-    """
-    from services.llm_validators.llm_bill_validator import (
-        extract_bill_from_chunk,
-        merge_bill_results,
-    )
-    
-    path = Path(pdf_path)
-    if not path.exists():
-        raise FileNotFoundError(f"PDF not found: {pdf_path}")
-    
-    print(f"[parser] Extracting bill: {path.name}")
-    
-    return extract_with_chunking(
-        pdf_path=str(path),
-        extraction_function=extract_bill_from_chunk,
-        merge_function=merge_bill_results,
-        strategy=strategy,
-    )
 
 
 def get_bill_chunking_info(pdf_path: str) -> dict:

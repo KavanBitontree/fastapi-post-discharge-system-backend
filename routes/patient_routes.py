@@ -10,6 +10,7 @@ from schemas.patient_profile_schemas import (
     PatientDashboardResponse,
     PatientDischargeHistoryResponse,
     PatientDischargeDocumentsResponse,
+    PatientDischargePdfsResponse,
 )
 
 router = APIRouter(prefix="/patient", tags=["Patient Self-Service"])
@@ -73,6 +74,30 @@ def get_discharge_history(
     return PatientProfileService.get_discharge_history(db, patient_id, page, size, sort)
 
 
+@router.get("/latest-discharge/pdfs", response_model=PatientDischargePdfsResponse)
+def get_latest_discharge_pdfs(
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Retrieve PDF Cloudinary URLs for the patient's **most recent** completed discharge.
+
+    Uses the patient identity from the JWT — no discharge ID required.
+
+    Returns:
+    - **discharge_summary_url**: full hospital discharge summary PDF
+    - **patient_friendly_summary_url**: simplified patient-friendly report PDF
+    - **insurance_ready_url**: insurance-ready report PDF
+    """
+    patient_id = _get_patient_id(current_user)
+    result = PatientProfileService.get_latest_discharge_pdfs(db, patient_id)
+    if not result:
+        raise HTTPException(
+            status_code=404, detail="No completed discharge record found for this patient."
+        )
+    return result
+
+
 @router.get("/discharge/{discharge_id}/documents", response_model=PatientDischargeDocumentsResponse)
 def get_discharge_documents(
     discharge_id: int,
@@ -81,6 +106,29 @@ def get_discharge_documents(
 ):
     patient_id = _get_patient_id(current_user)
     result = PatientProfileService.get_discharge_documents(db, patient_id, discharge_id)
+    if not result:
+        raise HTTPException(
+            status_code=404, detail="Discharge not found or access denied."
+        )
+    return result
+
+
+@router.get("/discharge/{discharge_id}/pdfs", response_model=PatientDischargePdfsResponse)
+def get_discharge_pdfs(
+    discharge_id: int,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Retrieve the Cloudinary PDF URLs for a specific discharge record.
+
+    Returns:
+    - **discharge_summary_url**: full hospital discharge summary PDF
+    - **patient_friendly_summary_url**: simplified patient-friendly report PDF
+    - **insurance_ready_url**: insurance-ready report PDF
+    """
+    patient_id = _get_patient_id(current_user)
+    result = PatientProfileService.get_discharge_pdfs(db, patient_id, discharge_id)
     if not result:
         raise HTTPException(
             status_code=404, detail="Discharge not found or access denied."
