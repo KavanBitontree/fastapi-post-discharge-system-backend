@@ -10,7 +10,8 @@ GET  /api/discharge/patient/{patient_id}/pdfs   → Get PDF URLs for a patient's
 Flow
 ----
 1. Admin selects a patient  (frontend holds patient_id)
-2. Admin attaches up to 5 reports, 5 bills, 5 prescriptions (all PDFs)
+2. Admin attaches up to 15 reports (max 15 pages each), 5 bills (max 5 pages each),
+   5 prescriptions (max 5 pages each) — all PDFs
 3. Admin clicks "Process" → POST /api/discharge/process
 4. Backend creates a discharge_history row (status=pending), then runs the
    sequential queue.  Each file is committed individually on success.
@@ -27,13 +28,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import List
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+import fitz  # pymupdf
+
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
 from core.database import get_db
 from models.discharge_history import DischargeHistory
 from models.patient import Patient
-from services.discharge_service import DischargeResult, FileJob, run_discharge_queue
+from services.discharge_service import DischargeResult, FileJob, run_discharge_queue, run_discharge_queue_in_background
 from controllers.discharge_pdf_controller import DischargePdfController
 from schemas.discharge_schemas import DischargePdfsResponse
 
@@ -41,16 +44,29 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/discharge", tags=["Discharge"])
 
-MAX_FILES_PER_TYPE = 5
+# Per-type file count limits
+MAX_REPORT_FILES = 15
+MAX_BILL_FILES = 5
+MAX_PRESCRIPTION_FILES = 5
+
+# Per-type page count limits (reject single PDFs exceeding these)
+MAX_REPORT_PAGES = 15
+MAX_BILL_PAGES = 5
+MAX_PRESCRIPTION_PAGES = 5
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _validate_pdf_files(files: List[UploadFile], label: str) -> None:
-    if len(files) > MAX_FILES_PER_TYPE:
+async def _validate_pdf_files(
+    files: List[UploadFile],
+    label: str,
+    max_files: int,
+    max_pages: int,
+) -> None:
+    if len(files) > max_files:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Maximum {MAX_FILES_PER_TYPE} {label} PDFs allowed per discharge.",
+            detail=f"Maximum {max_files} {label} PDFs allowed per discharge.",
         )
     for f in files:
         if not f.filename or not f.filename.lower().endswith(".pdf"):
@@ -58,6 +74,26 @@ def _validate_pdf_files(files: List[UploadFile], label: str) -> None:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"All {label} files must be PDF. Got: {f.filename!r}",
             )
+        # Read bytes to check page count, then reset cursor for later processing
+        content = await f.read()
+        try:
+            doc = fitz.open(stream=content, filetype="pdf")
+            page_count = len(doc)
+            doc.close()
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Could not parse PDF '{f.filename}'. Ensure it is a valid PDF file.",
+            )
+        if page_count > max_pages:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"{label.capitalize()} PDF '{f.filename}' has {page_count} pages. "
+                    f"Maximum allowed is {max_pages} page(s) per {label} PDF."
+                ),
+            )
+        await f.seek(0)
 
 
 async def _read_jobs(
@@ -106,28 +142,28 @@ def _result_to_error_detail(result: DischargeResult) -> dict:
 
 # ── POST /api/discharge/process ───────────────────────────────────────────────
 
-@router.post("/process", status_code=status.HTTP_201_CREATED)
+@router.post("/process", status_code=status.HTTP_202_ACCEPTED)
 async def process_discharge(
+    background_tasks: BackgroundTasks,
     patient_id:    int              = Form(..., description="ID of the patient"),
     strategy:      str              = Form("auto", description="LLM extraction strategy: auto | text | vision"),
-    reports:       List[UploadFile] = File(default=[], description="Up to 5 medical report PDFs"),
-    bills:         List[UploadFile] = File(default=[], description="Up to 5 bill PDFs"),
-    prescriptions: List[UploadFile] = File(default=[], description="Up to 5 prescription PDFs"),
+    reports:       List[UploadFile] = File(default=[], description="Up to 15 medical report PDFs (max 15 pages each)"),
+    bills:         List[UploadFile] = File(default=[], description="Up to 5 bill PDFs (max 5 pages each)"),
+    prescriptions: List[UploadFile] = File(default=[], description="Up to 5 prescription PDFs (max 5 pages each)"),
     db: Session = Depends(get_db),
 ):
     """
-    Upload all discharge documents and process them in a single request.
+    Upload all discharge documents and kick off background processing.
 
+    Returns 202 Accepted immediately with the discharge_id so the frontend
+    can start polling GET /api/discharge/{id}/status for live progress.
     The queue processes: reports → bills → prescriptions (in order).
     Each file is committed individually — if one fails, previous ones are kept.
-
-    Returns discharge_id on both success and failure so the frontend can
-    track the record and send a retry request.
     """
     # ── Validate inputs ───────────────────────────────────────────────────────
-    _validate_pdf_files(reports,       "report")
-    _validate_pdf_files(bills,         "bill")
-    _validate_pdf_files(prescriptions, "prescription")
+    await _validate_pdf_files(reports,       "report",       MAX_REPORT_FILES,       MAX_REPORT_PAGES)
+    await _validate_pdf_files(bills,         "bill",         MAX_BILL_FILES,         MAX_BILL_PAGES)
+    await _validate_pdf_files(prescriptions, "prescription", MAX_PRESCRIPTION_FILES, MAX_PRESCRIPTION_PAGES)
 
     if not reports and not bills and not prescriptions:
         raise HTTPException(
@@ -152,38 +188,33 @@ async def process_discharge(
     db.refresh(discharge)
     logger.info("Created discharge id=%d for patient id=%d", discharge.id, patient_id)
 
-    # ── Read all files into memory and build the job queue ────────────────────
+    # ── Read all files into memory NOW (before the request closes) ────────────
     report_jobs       = await _read_jobs(reports,       "report",       0, strategy)
     bill_jobs         = await _read_jobs(bills,         "bill",         0, strategy)
     prescription_jobs = await _read_jobs(prescriptions, "prescription", 0, strategy)
 
     all_jobs: List[FileJob] = report_jobs + bill_jobs + prescription_jobs
 
-    # ── Run the sequential queue ──────────────────────────────────────────────
-    result = run_discharge_queue(db, discharge, all_jobs)
-
-    if result.status == "failed":
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=_result_to_error_detail(result),
-        )
+    # ── Schedule background processing and return immediately ─────────────────
+    background_tasks.add_task(run_discharge_queue_in_background, discharge.id, all_jobs)
 
     return {
-        "discharge_id": result.discharge_id,
+        "discharge_id": discharge.id,
         "patient_id":   patient_id,
-        "status":       result.status,
-        "processed": {
-            "reports":       result.processed_reports,
-            "bills":         result.processed_bills,
-            "prescriptions": result.processed_prescriptions,
+        "status":       "pending",
+        "total": {
+            "reports":       len(report_jobs),
+            "bills":         len(bill_jobs),
+            "prescriptions": len(prescription_jobs),
         },
     }
 
 
 # ── POST /api/discharge/{discharge_id}/retry ──────────────────────────────────
 
-@router.post("/{discharge_id}/retry")
+@router.post("/{discharge_id}/retry", status_code=status.HTTP_202_ACCEPTED)
 async def retry_discharge(
+    background_tasks: BackgroundTasks,
     discharge_id:  int              = ...,
     strategy:      str              = Form("auto"),
     reports:       List[UploadFile] = File(default=[], description="Remaining report PDFs (from failed index)"),
@@ -194,6 +225,8 @@ async def retry_discharge(
     """
     Retry a failed discharge process.
 
+    Returns 202 Accepted immediately; processing continues in the background.
+    Poll GET /api/discharge/{id}/status for live progress.
     Upload only the files that have NOT yet been processed.
     The server reads the progress counters from the DB to know the correct
     starting index — files are indexed correctly for idempotent duplicate checks.
@@ -210,9 +243,9 @@ async def retry_discharge(
             detail="Discharge is already completed — nothing to retry.",
         )
 
-    _validate_pdf_files(reports,       "report")
-    _validate_pdf_files(bills,         "bill")
-    _validate_pdf_files(prescriptions, "prescription")
+    await _validate_pdf_files(reports,       "report",       MAX_REPORT_FILES,       MAX_REPORT_PAGES)
+    await _validate_pdf_files(bills,         "bill",         MAX_BILL_FILES,         MAX_BILL_PAGES)
+    await _validate_pdf_files(prescriptions, "prescription", MAX_PRESCRIPTION_FILES, MAX_PRESCRIPTION_PAGES)
 
     # Resume indices from stored progress
     report_jobs       = await _read_jobs(reports,       "report",       discharge.processed_reports,       strategy)
@@ -227,22 +260,17 @@ async def retry_discharge(
             detail="No files submitted for retry.",
         )
 
-    result = run_discharge_queue(db, discharge, all_jobs)
-
-    if result.status == "failed":
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=_result_to_error_detail(result),
-        )
+    # ── Schedule background processing and return immediately ─────────────────
+    background_tasks.add_task(run_discharge_queue_in_background, discharge_id, all_jobs)
 
     return {
-        "discharge_id": result.discharge_id,
+        "discharge_id": discharge_id,
         "patient_id":   discharge.patient_id,
-        "status":       result.status,
-        "processed": {
-            "reports":       result.processed_reports,
-            "bills":         result.processed_bills,
-            "prescriptions": result.processed_prescriptions,
+        "status":       "processing",
+        "total": {
+            "reports":       discharge.processed_reports + len(report_jobs),
+            "bills":         discharge.processed_bills + len(bill_jobs),
+            "prescriptions": discharge.processed_prescriptions + len(prescription_jobs),
         },
     }
 
