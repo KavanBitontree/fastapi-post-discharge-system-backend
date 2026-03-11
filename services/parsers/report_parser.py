@@ -57,42 +57,6 @@ def parse_pdf_from_memory(pdf_buffer: BinaryIO, filename: str, strategy: str = "
         merge_function=merge_report_results,
         strategy=strategy,
     )
-    """
-    Parse a medical PDF report into structured data using LLM with dynamic chunking.
-
-    Parameters
-    ----------
-    pdf_path : str
-        Path to the PDF file.
-    strategy : str
-        "auto" – auto-detect PDF type (default)
-        "text" – force text-based extraction
-        "vision" – force vision extraction
-
-    Returns
-    -------
-    ValidatedReport
-        Fully structured report with header and test results.
-
-    Raises
-    ------
-    FileNotFoundError
-        If the PDF does not exist.
-    ValueError
-        If extraction fails.
-    """
-    path = Path(pdf_path)
-    if not path.exists():
-        raise FileNotFoundError(f"PDF not found: {pdf_path}")
-
-    print(f"[parser] Extracting report: {path.name}")
-    
-    return extract_with_chunking(
-        pdf_path=str(path),
-        extraction_function=extract_structured_report_from_chunk,
-        merge_function=merge_report_results,
-        strategy=strategy,
-    )
 
 
 def get_report_chunking_info(pdf_path: str) -> dict:

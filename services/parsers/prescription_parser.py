@@ -107,40 +107,6 @@ def parse_prescription_pdf_from_memory(pdf_buffer: BinaryIO, filename: str, stra
         merge_function=merge_prescription_results,
         strategy=strategy,
     )
-    """
-    Extract prescription data from PDF using LLM with dynamic chunking.
-    
-    Parameters
-    ----------
-    pdf_path : str
-        Path to PDF file
-    strategy : str
-        "auto" – auto-detect PDF type (default)
-        "text" – force text-based extraction
-        "vision" – force vision extraction
-    
-    Returns
-    -------
-    ParsedPrescription
-        Parsed prescription with all extracted information
-    """
-    from services.llm_validators.llm_prescription_validator import (
-        extract_prescription_from_chunk,
-        merge_prescription_results,
-    )
-    
-    path = Path(pdf_path)
-    if not path.exists():
-        raise FileNotFoundError(f"PDF not found: {pdf_path}")
-    
-    print(f"[parser] Extracting prescription: {path.name}")
-    
-    return extract_with_chunking(
-        pdf_path=str(path),
-        extraction_function=extract_prescription_from_chunk,
-        merge_function=merge_prescription_results,
-        strategy=strategy,
-    )
 
 
 def get_prescription_chunking_info(pdf_path: str) -> dict:

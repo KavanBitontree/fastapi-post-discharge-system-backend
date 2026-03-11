@@ -121,20 +121,27 @@ def convert_discharge_summary_to_patient_friendly(
         Patient-friendly report with summary, key points, medications, etc.
     """
     print(f"[converter] Starting conversion of {len(discharge_text)} character document")
-    
-    # Calculate if we need chunking
-    estimated_tokens = estimate_tokens(discharge_text)
-    print(f"[converter] Estimated tokens: {estimated_tokens}")
-    
-    # With 8K TPM limit, we need to be very conservative
-    # Use chunking for anything over 3000 tokens (to stay well under 8K with prompt + output)
-    if estimated_tokens < 3000:  # Very conservative for 8K TPM limit
+
+    # Estimate page count from text length (avg ~2000 chars/page for medical docs)
+    avg_chars_per_page = 2000
+    estimated_pages = max(1, len(discharge_text) // avg_chars_per_page)
+
+    strategy = calculate_chunking_strategy(
+        total_pages=estimated_pages,
+        avg_chars_per_page=avg_chars_per_page,
+        model_name=model_name,
+    )
+
+    print(f"[converter] Estimated tokens: {strategy.estimated_tokens_per_chunk * strategy.estimated_total_chunks}")
+    print(f"[converter] Chunking strategy: {strategy.estimated_total_chunks} chunk(s), "
+          f"{strategy.pages_per_chunk} pages/chunk, ~${strategy.estimated_cost:.4f}")
+
+    if strategy.estimated_total_chunks == 1:
         print("[converter] Document small enough for single-pass processing")
         return _convert_single_pass(discharge_text)
-    
-    # For large documents, use chunking strategy
+
     print("[converter] Document requires chunking")
-    return _convert_with_chunking(discharge_text, model_name)
+    return _convert_with_chunking(discharge_text, strategy.max_chars_per_chunk)
 
 
 def _convert_single_pass(discharge_text: str) -> dict:
@@ -181,7 +188,7 @@ Return ONLY valid JSON (no markdown, no extra text) with these exact fields:
         raise ValueError(f"Failed to convert discharge summary: {str(e)}")
 
 
-def _convert_with_chunking(discharge_text: str, model_name: str) -> dict:
+def _convert_with_chunking(discharge_text: str, max_chars_per_chunk: int) -> dict:
     """
     Convert large discharge summary using chunking strategy.
     
@@ -190,14 +197,6 @@ def _convert_with_chunking(discharge_text: str, model_name: str) -> dict:
     2. Simplify each chunk separately
     3. Synthesize all simplified chunks into final 1-page report
     """
-    
-    # For 8K TPM limit, use very small chunks
-    # Target: ~2000 tokens per chunk (including prompt + output)
-    # Input should be ~1000 tokens max
-    max_input_tokens = 1000
-    max_chars_per_chunk = int(max_input_tokens * 3.5)  # ~3500 chars
-    
-    print(f"[converter] Using aggressive chunking for 8K TPM limit")
     print(f"[converter] Max chars per chunk: {max_chars_per_chunk}")
     
     # Split text into chunks
@@ -312,9 +311,9 @@ def estimate_conversion_cost(discharge_text: str, model_name: str = "openai/gpt-
     # Estimate output tokens (summary is much shorter than input)
     estimated_output_tokens = 2000  # ~1 page of output
     
-    # Calculate cost
-    input_cost = (estimated_tokens / 1_000_000) * config.get("input_cost_per_1m", 0)
-    output_cost = (estimated_output_tokens / 1_000_000) * config.get("output_cost_per_1m", 0)
+    # Calculate cost using dataclass attributes
+    input_cost = (estimated_tokens / 1_000_000) * config.input_cost_per_1m
+    output_cost = (estimated_output_tokens / 1_000_000) * config.output_cost_per_1m
     total_cost = input_cost + output_cost
     
     # Estimate time (rough approximation)

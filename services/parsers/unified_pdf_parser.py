@@ -46,20 +46,21 @@ def analyze_pdf_for_chunking(pdf_path: str) -> dict:
         total_pages = len(images)
         avg_tokens_per_page = 1500  # Vision models use ~1000-2000 tokens per image
         
-        chunk_info = calculate_chunk_size(
+        avg_chars_per_page = int(avg_tokens_per_page * 3.5)
+        chunk_strategy = calculate_chunking_strategy(
             total_pages=total_pages,
-            avg_tokens_per_page=avg_tokens_per_page,
-            model_name=MODEL_ID
+            avg_chars_per_page=avg_chars_per_page,
+            model_name="openai/gpt-oss-120b",
         )
-        
+
         return {
             "pdf_type": "scanned",
             "total_pages": total_pages,
-            "pages_per_chunk": chunk_info["pages_per_chunk"],
-            "total_chunks": chunk_info["total_chunks"],
-            "estimated_tokens_per_chunk": chunk_info["estimated_tokens_per_chunk"],
-            "estimated_cost": chunk_info["estimated_cost"],
-            "model": MODEL_ID,
+            "pages_per_chunk": chunk_strategy.pages_per_chunk,
+            "total_chunks": chunk_strategy.estimated_total_chunks,
+            "estimated_tokens_per_chunk": chunk_strategy.estimated_tokens_per_chunk,
+            "estimated_cost": chunk_strategy.estimated_cost,
+            "model": chunk_strategy.model_name,
             "extraction_type": "vision",
             "detection_info": detection_info,
         }
