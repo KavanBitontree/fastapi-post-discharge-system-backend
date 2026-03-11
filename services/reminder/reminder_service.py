@@ -42,10 +42,10 @@ TIMEZONE = ZoneInfo("Asia/Kolkata")
 MEAL_SLOTS: list[tuple[str, str, int]] = [
     ("before_breakfast", "Before Breakfast", 7),
     ("after_breakfast",  "After Breakfast",  8),
-    ("before_lunch",     "Before Lunch",     12),
+    ("before_lunch",     "Before Lunch",     11),
     ("after_lunch",      "After Lunch",      13),
-    ("before_dinner",    "Before Dinner",    19),
-    ("after_dinner",     "After Dinner",     20),
+    ("before_dinner",    "Before Dinner",    18),
+    ("after_dinner",     "After Dinner",     21),
 ]
 
 SLOT_LABELS: dict[str, str] = {f: l for f, l, _ in MEAL_SLOTS}
