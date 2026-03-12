@@ -15,7 +15,6 @@ from core.database import engine
 from core.config import settings
 from core.security import cookie_scheme 
 from core.config import settings  # noqa: F401 — also sets LangSmith os.environ vars
-from core.scheduler import start_scheduler, stop_scheduler
 import models  # noqa: F401 — registers all mappers (including TelegramSession) on startup
 from services.telegram.bot import start_polling, stop_polling
 
@@ -49,10 +48,8 @@ from routes.patient_routes import router as patient_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle hook."""
-    start_scheduler()   # starts all 6 cron reminder jobs in background thread
     start_polling()     # starts Telegram bot long-polling thread
     yield
-    stop_scheduler()
     stop_polling()
 
 

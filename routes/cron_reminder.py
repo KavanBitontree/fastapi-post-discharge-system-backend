@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from core.config import settings
 from core.database import get_db
-from services.reminder.reminder_service import run_all_due_reminders
+from services.reminder.reminder_service import run_all_due_reminders, purge_stale_discharges
 
 router = APIRouter(prefix="/cron", tags=["Cron"])
 
@@ -46,8 +46,10 @@ def cron_reminders(db: Session = Depends(get_db)):
     20-minute delivery window.
     """
     result = run_all_due_reminders(db, window_minutes=20)
+    purged = purge_stale_discharges(db)
     return {
         "message": "Cron reminder job completed.",
         "notified": result["notified"],
         "skipped":  result["skipped"],
+        "purged":   purged,
     }
