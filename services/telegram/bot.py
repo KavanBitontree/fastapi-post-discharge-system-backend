@@ -357,7 +357,13 @@ def _handle_verified(db: Session, sess: TelegramSession, chat_id: str, text: str
 
     discharge_id = sess.discharge_id
     if not discharge_id:
-        send_message(chat_id, _AGENT_ERROR)
+        send_message(
+            chat_id,
+            "📋 It looks like you don't have any discharge history in our records yet.\n\n"
+            "Without a discharge on file, I won't have any reports, bills, or medication "
+            "data to share with you.\n\n"
+            "If you believe this is a mistake, please contact the hospital for assistance.",
+        )
         return
 
     placeholder_id: int | None = None
