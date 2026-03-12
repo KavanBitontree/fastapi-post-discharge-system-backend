@@ -10,7 +10,7 @@ Supports:
 """
 
 from typing import Optional, List, Dict
-from core.txt_to_txt_llm_init import llm
+from core.llm_init import llm
 from schemas.report_schemas import TestResult, ReportHeader, ValidatedReport
 
 
@@ -30,12 +30,12 @@ HEADER FIELDS:
 TEST RESULTS - Extract EVERY test with:
 - test_name: Test name (REQUIRED)
 - section: Section/category heading
-- normal_result: Value when no flag present
-- abnormal_result: Value when flagged (H/L/*)
-- flag: "H"=High, "L"=Low, "*"=Abnormal
+- normal_result: Result value when no abnormal flag is present
+- abnormal_result: Result value when an explicit H/L/* flag is printed next to it
+- flag: "H"=High, "L"=Low, "*"=Abnormal — copy exactly as printed in the PDF
 - units: Unit of measurement
-- reference_range_low: Lower bound
-- reference_range_high: Upper bound
+- reference_range_low: Lower bound of reference range
+- reference_range_high: Upper bound of reference range
 
 CRITICAL RULES:
 - Extract ALL tests from ALL pages - do not skip any

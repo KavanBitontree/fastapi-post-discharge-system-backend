@@ -15,8 +15,8 @@ class TelegramSession(Base):
     __tablename__ = "telegram_sessions"
 
     id = Column(Integer, primary_key=True, index=True)
-    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=True)  # Nullable until verified
-    session_status = Column(SQLEnum(SessionStatus), nullable=False, default=SessionStatus.AWAIT_MOBILE)
+    discharge_id = Column(Integer, ForeignKey("discharge_history.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=True, index=True)
+    session_status = Column(SQLEnum(SessionStatus), nullable=False, default=SessionStatus.AWAIT_MOBILE)  # Initial status awaiting mobile number
     telegram_id = Column(String, nullable=False, unique=True, index=True)  # Telegram user ID
     phone_number = Column(String, nullable=True)  # Phone number for verification
     otp = Column(String, nullable=True)  # One-time password
@@ -28,7 +28,7 @@ class TelegramSession(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=True)
 
     # Relationships
-    patient = relationship("Patient", back_populates="telegram_sessions")
-
+    discharge = relationship("DischargeHistory", back_populates="telegram_sessions")
+    
     def __repr__(self):
         return f"<TelegramSession(id={self.id}, telegram_id={self.telegram_id}, status={self.session_status})>"

@@ -1,4 +1,5 @@
 from models.patient import Patient
+from models.discharge_history import DischargeHistory
 from models.report import Report
 from models.report_description import ReportDescription
 from models.bill import Bill
@@ -14,6 +15,7 @@ from models.telegram_session import TelegramSession
 
 __all__ = [
     "Patient",
+    "DischargeHistory",
     "Report",
     "ReportDescription",
     "Bill",

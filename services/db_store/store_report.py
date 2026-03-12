@@ -99,29 +99,17 @@ def get_patient_by_id(db: Session, patient_id: int):
 
 def check_duplicate_report(
     db: Session,
-    patient_id: int,
+    discharge_id: int,
     report_name: str,
     report_date: datetime,
 ) -> bool:
     """
-    Check if a report already exists for this patient.
-
-    Parameters
-    ----------
-    db : Session
-    patient_id : int
-    report_name : str
-    report_date : datetime
-
-    Returns
-    -------
-    bool
-        True if duplicate exists.
+    Check if a report already exists for this discharge.
     """
     from models.report import Report
 
     existing = db.query(Report).filter(
-        Report.patient_id == patient_id,
+        Report.discharge_id == discharge_id,
         Report.report_name == report_name,
         Report.report_date == report_date,
     ).first()
@@ -133,8 +121,8 @@ def check_duplicate_report(
 
 def store_report(
     db: Session,
-    validated_report,           # ValidatedReport (from llm_report_validator)
-    patient_id: int,
+    validated_report,
+    discharge_id: int,
     report_url: Optional[str] = None,
 ) -> object:
     """
@@ -173,7 +161,7 @@ def store_report(
 
     # Create Report row
     report = Report(
-        patient_id=patient_id,
+        discharge_id=discharge_id,
         report_name=header.report_name,
         report_date=parse_date(header.report_date),
         collection_date=parse_date(header.collection_date),
@@ -189,7 +177,7 @@ def store_report(
     descriptions = [
         ReportDescription(
             report_id=report.id,
-            patient_id=patient_id,
+            discharge_id=discharge_id,
             test_name=row.test_name,
             section=row.section,
             normal_result=row.normal_result,

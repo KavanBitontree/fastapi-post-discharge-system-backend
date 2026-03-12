@@ -7,7 +7,7 @@ _ENV_FILE = os.path.join(os.path.dirname(__file__), "..", ".env")
 
 class Settings(BaseSettings):
     NEON_DB_URL: str
-    FRONTEND_URL: str = "http://localhost:5173"
+    FRONTEND_URL: str
     ENV: str = "development"
     CLOUD_NAME: str
     CLOUDINARY_API_KEY: str
@@ -17,14 +17,28 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     CRON_SECRET: str
     GROQ_API_KEY: str
+    TELEGRAM_BOT_TOKEN: str
+    TELEGRAM_WEBHOOK_SECRET: str = ""  # secret_token for verifying webhook requests
+    BACKEND_URL: str = ""  # e.g. https://your-app.vercel.app — used to register Telegram webhook
     HF_TOKEN: str  # HuggingFace token for image-to-text model
     LANGSMITH_TRACING: str
     LANGSMITH_API_KEY: str
     LANGSMITH_PROJECT: str
     LANGSMITH_ENDPOINT: str
+    TWILIO_ACCOUNT_SID: str
+    TWILIO_AUTH_TOKEN: str
+    TWILIO_FROM_NUMBER: str
+
+    # ICD-10 RAG
+    PINECONE_API_KEY: str
+    PINECONE_INDEX_NAME: str = "icd10cm-2026"
+    PINECONE_NAMESPACE: str = "icd10cm_2026"
+    OPENROUTER_API_KEY: str
+    OPENROUTER_MODEL: str = "google/gemini-2.5-flash"
 
     class Config:
         env_file = _ENV_FILE
+        extra = "ignore"  # ignore unknown vars like HF_HUB_DISABLE_SYMLINKS_WARNING
 
 
 settings = Settings()

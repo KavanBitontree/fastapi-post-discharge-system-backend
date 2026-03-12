@@ -9,7 +9,7 @@ class Report(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True, index=True)
 
-    patient_id = Column(Integer, ForeignKey("patients.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
+    discharge_id = Column(Integer, ForeignKey("discharge_history.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
     report_name = Column(String(255), nullable=False)  # e.g. "Complete Blood Count (CBC)", "Lipid Panel", "Metabolic Panel"
     report_date = Column(DateTime(timezone=True), nullable=True)
     collection_date = Column(DateTime(timezone=True), nullable=True)
@@ -22,5 +22,5 @@ class Report(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     # Relationships
-    patient = relationship("Patient", back_populates="reports")
+    discharge = relationship("DischargeHistory", back_populates="reports")
     descriptions = relationship("ReportDescription", back_populates="report", cascade="all, delete-orphan")

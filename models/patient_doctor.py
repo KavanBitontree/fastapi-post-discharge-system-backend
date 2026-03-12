@@ -8,9 +8,9 @@ class PatientDoctor(Base):
     __tablename__ = "patient_doctor"
 
     id = Column(Integer, primary_key=True, index=True)
-    patient_id = Column(Integer, ForeignKey("patients.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
+    discharge_id = Column(Integer, ForeignKey("discharge_history.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
     doctor_id = Column(Integer, ForeignKey("doctors.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
 
     # Relationships
-    patient = relationship("Patient", back_populates="doctors")
+    discharge = relationship("DischargeHistory", back_populates="doctors")
     doctor = relationship("Doctor", back_populates="patients")

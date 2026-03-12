@@ -1,9 +1,29 @@
+from contextlib import asynccontextmanager
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
 from fastapi import FastAPI, APIRouter
 import fastapi_swagger_dark as fsd
 from sqlalchemy import text
+
 from core.database import engine
 from core.config import settings
 from core.security import cookie_scheme 
+from core.config import settings  # noqa: F401 — also sets LangSmith os.environ vars
+import models  # noqa: F401 — registers all mappers (including TelegramSession) on startup
+from services.telegram.sender import set_webhook, set_my_commands
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
+    datefmt="%H:%M:%S",
+)
+
 from fastapi.middleware.cors import CORSMiddleware
 from routes import register_routes
 from routes import login_routes
@@ -14,15 +34,46 @@ from routes import fetch_patient_routes
 from routes.report_routes import router as report_router
 from routes.bill_routes import router as bill_router
 from routes.prescription_routes import router as prescription_router
-app = FastAPI(docs_url=None,
-              swagger_ui_parameters={"persistAuthorization": True})
+from routes.patient_friendly_report_routes import router as patient_friendly_router
+from routes.reminder_routes import router as reminder_router   # ← new
+from routes.chat_routes import router as chat_router
+from routes.cron_reminder import router as cron_reminder_router
+from routes.discharge_routes import router as discharge_router
+from routes.icd_routes import router as icd_router
+from routes.ird_routes import router as ird_router
+from routes.admin_routes import router as admin_analytics_router
+from routes.patient_routes import router as patient_router
+from routes.telegram_webhook import router as telegram_webhook_router
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup / shutdown lifecycle hook."""
+    # Register Telegram webhook (serverless-safe — no background threads)
+    set_my_commands()
+    backend = (settings.BACKEND_URL or "").strip()
+    if backend.startswith("https://"):
+        webhook_url = f"{backend.rstrip('/')}/telegram/webhook"
+        set_webhook(webhook_url, secret_token=settings.TELEGRAM_WEBHOOK_SECRET)
+    else:
+        logging.getLogger(__name__).info(
+            "BACKEND_URL not set or not HTTPS — skipping Telegram webhook registration "
+            "(expected for local dev)"
+        )
+    yield
+
+
+app = FastAPI(
+    title="Medicare Post-Discharge System API",
+    description="API for managing patient reports, bills, and medications",
+    version="1.0.0",
+    docs_url=None,
+    lifespan=lifespan,
+)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        settings.FRONTEND_URL
-    ],
+    allow_origins=[settings.FRONTEND_URL],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -36,10 +87,20 @@ router = APIRouter()
 fsd.install(router)
 app.include_router(router)
 
-# Include routes
+# ── Routes ────────────────────────────────────────────────────────────────────
 app.include_router(report_router)
 app.include_router(bill_router)
 app.include_router(prescription_router)
+app.include_router(patient_friendly_router)
+app.include_router(reminder_router)   # ← new: /reminders/trigger
+app.include_router(chat_router)        # POST /chat
+app.include_router(cron_reminder_router)  # POST /cron/reminders
+app.include_router(discharge_router)      # POST /api/discharge/process
+app.include_router(icd_router)            # GET /icd/info  POST /icd/lookup
+app.include_router(ird_router)            # POST /api/discharge/{id}/generate-ird
+app.include_router(admin_analytics_router)  # GET /admin/dashboard, /admin/discharge-history, /admin/discharge/{id}/documents
+app.include_router(patient_router)          # GET /patient/profile, PATCH /patient/profile, GET /patient/dashboard, etc.
+app.include_router(telegram_webhook_router)   # POST /telegram/webhook
 
 
 @app.get("/")
@@ -54,10 +115,7 @@ async def db_check():
             conn.execute(text("SELECT 1"))
         return {"message": "Connected to neon db"}
     except Exception as e:
-        return {
-            "message": "Failed to connect to neon db",
-            "error": str(e)
-        }
+        return {"message": "Failed to connect to neon db", "error": str(e)}
 
 
 if __name__ == "__main__":
