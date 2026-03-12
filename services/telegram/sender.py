@@ -77,6 +77,12 @@ def send_message(chat_id: str | int, text: str, parse_mode: str = "HTML") -> boo
         )
         r.raise_for_status()
         return True
+    except httpx.HTTPStatusError as exc:
+        logger.error(
+            "Telegram sendMessage failed → chat_id=%s : %s | response: %s",
+            chat_id, exc, exc.response.text,
+        )
+        return False
     except Exception as exc:
         logger.error("Telegram sendMessage failed → chat_id=%s : %s", chat_id, exc)
         return False

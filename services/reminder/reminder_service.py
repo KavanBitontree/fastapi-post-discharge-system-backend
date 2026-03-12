@@ -19,6 +19,7 @@ Cron flow:
 
 from __future__ import annotations
 
+import html
 import logging
 from datetime import date, datetime, timedelta
 from typing import Optional
@@ -183,7 +184,7 @@ def build_telegram_message(
     count      = len(due_items)
 
     lines: list[str] = [
-        f"👋 Hello <b>{patient.full_name}</b>!",
+        f"👋 Hello <b>{html.escape(patient.full_name)}</b>!",
         f"🕐 It's <b>{time_str}</b> — time for your <b>{slot_label}</b> medicine{'s' if count > 1 else ''}.\n",
     ]
 
@@ -191,12 +192,12 @@ def build_telegram_message(
         med: Medication = item["medication"]
 
         emoji    = FORM_EMOJI.get(med.form_of_medicine, "💊") if med.form_of_medicine else "💊"
-        form_str = f" ({med.form_of_medicine.value.title()})" if med.form_of_medicine else ""
-        strength = f" {med.strength}" if med.strength else ""
+        form_str = f" ({html.escape(med.form_of_medicine.value.title())})" if med.form_of_medicine else ""
+        strength = f" {html.escape(med.strength)}" if med.strength else ""
         days_left = _days_remaining(med, today)
 
-        lines.append(f"{emoji} <b>{idx}. {med.drug_name}{strength}{form_str}</b>")
-        lines.append(f"   • Dose      : {med.dosage}")
+        lines.append(f"{emoji} <b>{idx}. {html.escape(med.drug_name)}{strength}{form_str}</b>")
+        lines.append(f"   • Dose      : {html.escape(str(med.dosage))}")
         if days_left is not None:
             lines.append(f"   • Days left : {days_left} day(s)")
         lines.append("")
