@@ -37,7 +37,7 @@ from core.config import settings
 # ══════════════════════════════════════════════════════════════════════════════
 
 HF_TOKEN        = settings.HF_TOKEN
-MODEL_ID        = "Qwen/Qwen2.5-VL-72B-Instruct"  # HF routes to best provider
+MODEL_ID        = "Qwen/Qwen2.5-VL-72B-Instruct:hyperbolic"
 PAGES_PER_CHUNK = 2
 DPI             = 200
 MAX_IMG_DIM     = 1800
@@ -61,10 +61,7 @@ class HFInferenceChatModel(BaseChatModel):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._client = InferenceClient(
-            provider="hf-inference",
-            api_key=self.hf_token,
-        )
+        self._client = InferenceClient(api_key=self.hf_token)
 
     @property
     def _llm_type(self) -> str:
