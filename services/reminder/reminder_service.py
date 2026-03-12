@@ -44,7 +44,7 @@ MEAL_SLOTS: list[tuple[str, str, int, int]] = [
     ("before_breakfast", "Before Breakfast", 7,  0),
     ("after_breakfast",  "After Breakfast",  8,  0),
     ("before_lunch",     "Before Lunch",     11, 0),
-    ("after_lunch",      "After Lunch",      12, 30),
+    ("after_lunch",      "After Lunch",      13, 0),
     ("before_dinner",    "Before Dinner",    18, 0),
     ("after_dinner",     "After Dinner",     21, 0),
 ]
