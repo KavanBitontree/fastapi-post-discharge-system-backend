@@ -16,9 +16,13 @@ Install:
 import os
 import math
 import base64
+import time
+import logging
 from pathlib import Path
 from io import BytesIO
 from typing import Any, List, Optional
+
+logger = logging.getLogger(__name__)
 
 import fitz  # pymupdf — no poppler, no system deps
 from PIL import Image
@@ -39,8 +43,8 @@ from core.config import settings
 HF_TOKEN        = settings.HF_TOKEN
 MODEL_ID        = "Qwen/Qwen2.5-VL-72B-Instruct:hyperbolic"
 PAGES_PER_CHUNK = 2
-DPI             = 200
-MAX_IMG_DIM     = 1800
+DPI             = 150   # 150 DPI renders faster and stays within 1400px after thumbnail
+MAX_IMG_DIM     = 1400  # smaller JPEG payload → faster HF inference, avoids 504
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -55,7 +59,7 @@ class HFInferenceChatModel(BaseChatModel):
 
     model_id:    str
     hf_token:    str
-    max_tokens:  int   = 4096
+    max_tokens:  int   = 2048  # lower → faster inference, avoids 504 gateway timeouts
     temperature: float = 0.0
     _client:     Any   = None
 
@@ -87,14 +91,30 @@ class HFInferenceChatModel(BaseChatModel):
         **kwargs,
     ) -> ChatResult:
         hf_messages = self._convert_messages(messages)
-        response = self._client.chat.completions.create(
-            model=self.model_id,
-            messages=hf_messages,
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
-        )
-        text = response.choices[0].message.content
-        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=text))])
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                response = self._client.chat.completions.create(
+                    model=self.model_id,
+                    messages=hf_messages,
+                    max_tokens=self.max_tokens,
+                    temperature=self.temperature,
+                )
+                text = response.choices[0].message.content
+                return ChatResult(generations=[ChatGeneration(message=AIMessage(content=text))])
+            except Exception as exc:
+                last_exc = exc
+                err_str = str(exc)
+                if any(code in err_str for code in ("502", "503", "504")):
+                    wait = 15 * (attempt + 1)  # 15 s, 30 s, 45 s
+                    logger.warning(
+                        "HF inference transient error (attempt %d/3) — retrying in %ds: %s",
+                        attempt + 1, wait, err_str[:120],
+                    )
+                    time.sleep(wait)
+                    continue
+                raise
+        raise last_exc  # type: ignore[misc]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
