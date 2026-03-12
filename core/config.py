@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     CRON_SECRET: str
     GROQ_API_KEY: str
     TELEGRAM_BOT_TOKEN: str
+    TELEGRAM_WEBHOOK_SECRET: str = ""  # secret_token for verifying webhook requests
+    BACKEND_URL: str = ""  # e.g. https://your-app.vercel.app — used to register Telegram webhook
     HF_TOKEN: str  # HuggingFace token for image-to-text model
     LANGSMITH_TRACING: str
     LANGSMITH_API_KEY: str

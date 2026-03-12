@@ -1,7 +1,7 @@
 """
 services/telegram/bot.py
 --------------------------
-Telegram bot — long-polling state machine.
+Telegram bot — webhook-driven state machine.
 
 Verification flow
 ─────────────────
@@ -36,7 +36,6 @@ from __future__ import annotations
 import logging
 import re
 import threading
-import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -48,7 +47,7 @@ from models.discharge_history import DischargeHistory
 from models.patient import Patient
 from models.telegram_session import TelegramSession
 from services.telegram.otp import generate_otp, send_otp_sms
-from services.telegram.sender import get_updates, send_message, send_placeholder, edit_message, set_my_commands
+from services.telegram.sender import send_message, send_placeholder, edit_message, set_my_commands
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +95,9 @@ _OTP_SENT = (
 _INVALID_OTP_FORMAT = (
     "⚠️ I couldn't find a 6-digit OTP in your message.\n"
     "Please send <b>only the 6-digit code</b>.\n"
-    "Example: <code>123456</code>"
+    "Example: <code>123456</code> \n"
+    "if you want to resend the OTP, type /resend."
+
 )
 
 _WRONG_OTP = "❌ Incorrect OTP. You have <b>{attempts}</b> attempt(s) remaining."
@@ -497,71 +498,4 @@ def handle_update(update: dict) -> None:
         db.close()
 
 
-# ── Long-polling loop ─────────────────────────────────────────────────────────
 
-_stop_event = threading.Event()
-_bot_thread: threading.Thread | None = None
-
-
-def _polling_loop() -> None:
-    logger.info("🤖 Telegram bot polling started")
-    set_my_commands()
-
-    # Drain any updates that accumulated while the server was offline so we
-    # never replay stale messages from a previous session on restart.
-    pending = get_updates(offset=0, timeout=0)
-    if pending:
-        offset = pending[-1]["update_id"] + 1
-        logger.info("Skipped %d stale update(s) from previous session (offset → %d)", len(pending), offset)
-    else:
-        offset = 0
-
-    _conflict_warned = False
-
-    while not _stop_event.is_set():
-        try:
-            updates = get_updates(offset, timeout=20)
-            if updates is None:
-                # 409 — a previous crashed instance left an open poll at Telegram.
-                # Telegram holds it for up to 20s. Back off and retry silently.
-                if not _conflict_warned:
-                    logger.warning(
-                        "Telegram 409 Conflict: a previous session is still open at Telegram. "
-                        "Will retry every 30s until it clears automatically."
-                    )
-                    _conflict_warned = True
-                _stop_event.wait(30)
-                continue
-            _conflict_warned = False
-            for upd in updates:
-                try:
-                    handle_update(upd)
-                except Exception as exc:
-                    logger.error("Error handling update %s: %s", upd.get("update_id"), exc)
-                offset = upd["update_id"] + 1
-        except Exception as exc:
-            logger.error("Polling loop fatal error: %s", exc)
-            time.sleep(5)  # back off before retry
-
-    logger.info("🛑 Telegram bot polling stopped")
-
-
-def start_polling() -> None:
-    """Start the bot in a daemon background thread."""
-    global _bot_thread
-    _stop_event.clear()
-    _bot_thread = threading.Thread(
-        target=_polling_loop,
-        name="telegram-bot",
-        daemon=True,
-    )
-    _bot_thread.start()
-    logger.info("✅ Telegram bot thread started")
-
-
-def stop_polling() -> None:
-    """Signal the polling loop to stop and wait for the thread to join."""
-    _stop_event.set()
-    if _bot_thread and _bot_thread.is_alive():
-        _bot_thread.join(timeout=30)
-    logger.info("Telegram bot thread stopped")

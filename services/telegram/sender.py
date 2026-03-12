@@ -2,7 +2,7 @@
 services/telegram/sender.py
 -----------------------------
 Thin wrapper around the Telegram Bot API (sync, httpx).
-Works in background threads (reminder cron, bot polling).
+Used by the webhook handler and reminder cron.
 """
 
 from __future__ import annotations
@@ -88,31 +88,47 @@ def send_message(chat_id: str | int, text: str, parse_mode: str = "HTML") -> boo
         return False
 
 
-def get_updates(offset: int = 0, timeout: int = 20) -> list[dict] | None:
+# ── Webhook management ────────────────────────────────────────────────────────
+
+def set_webhook(url: str, secret_token: str = "") -> bool:
     """
-    Long-poll getUpdates. Blocks for `timeout` seconds.
-    Returns list of Update objects, or None on 409 Conflict (another instance polling).
+    Register a Telegram webhook.  Call once on startup (or via a one-off script).
+    `url` must be HTTPS.  `secret_token` is sent back by Telegram in the
+    X-Telegram-Bot-Api-Secret-Token header so our endpoint can verify origin.
     """
+    payload: dict = {
+        "url": url,
+        "allowed_updates": ["message"],
+        "drop_pending_updates": True,
+    }
+    if secret_token:
+        payload["secret_token"] = secret_token
     try:
-        r = httpx.get(
-            f"{_BASE}/getUpdates",
-            params={
-                "offset":          offset,
-                "timeout":         timeout,
-                "allowed_updates": ["message"],
-            },
-            timeout=timeout + 5,
+        r = httpx.post(f"{_BASE}/setWebhook", json=payload, timeout=10)
+        r.raise_for_status()
+        ok = r.json().get("result", False)
+        logger.info("setWebhook → %s  (url=%s)", ok, url)
+        return bool(ok)
+    except Exception as exc:
+        logger.error("setWebhook failed: %s", exc)
+        return False
+
+
+def delete_webhook(drop_pending: bool = True) -> bool:
+    """Remove the current webhook (useful for switching back to polling locally)."""
+    try:
+        r = httpx.post(
+            f"{_BASE}/deleteWebhook",
+            json={"drop_pending_updates": drop_pending},
+            timeout=10,
         )
         r.raise_for_status()
-        return r.json().get("result", [])
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == 409:
-            return None  # signal conflict to caller — don't log here
-        logger.error("getUpdates failed: %s", exc)
-        return []
+        ok = r.json().get("result", False)
+        logger.info("deleteWebhook → %s", ok)
+        return bool(ok)
     except Exception as exc:
-        logger.error("getUpdates failed: %s", exc)
-        return []
+        logger.error("deleteWebhook failed: %s", exc)
+        return False
 
 
 def set_my_commands() -> None:
