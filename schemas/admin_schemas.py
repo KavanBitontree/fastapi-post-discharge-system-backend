@@ -104,3 +104,16 @@ class DischargeDocumentsResponse(BaseModel):
     reports: List[ReportItem]
     bills: List[BillItem]
     medications: List[MedicationItem]
+
+
+# ── Discharge PDFs (admin view — all three URLs) ─────────────────────────────────────────
+
+class AdminDischargePdfsResponse(BaseModel):
+    discharge_id: int
+    patient_id: int
+    patient_name: str
+    discharge_date: Optional[str]
+    status: str
+    discharge_summary_url: Optional[str]
+    patient_friendly_summary_url: Optional[str]
+    insurance_ready_url: Optional[str]
