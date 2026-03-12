@@ -1,8 +1,11 @@
 ﻿import json
+import logging
 import re
 from typing import Any, Dict, List, Tuple
 
 from icd_rag_bot.rag.openrouter_client import chat_completion
+
+logger = logging.getLogger(__name__)
 
 
 PLANNER_SYSTEM = """You are a clinical query planner for ICD-10-CM retrieval.
@@ -43,16 +46,24 @@ DIAGNOSIS ELEVATION:
 - For each flagged result ask: what named clinical condition does this value support?
   Generate a problem using THAT CONDITION NAME, not the measurement name.
   Examples of the principle (applies to ANY condition, not just these):
-    HIGH creatinine + LOW eGFR        -> problem: chronic kidney disease
+    HIGH creatinine + LOW eGFR        -> problem: chronic kidney disease (include stage -- see CKD STAGING)
     HIGH aldosterone or LOW renin     -> problem: primary hyperaldosteronism
     HIGH cholesterol + HIGH LDL       -> problem: hyperlipidemia or mixed dyslipidemia
     HIGH homocysteine                 -> problem: hyperhomocysteinemia
     HIGH CRP or elevated ESR          -> problem: elevated inflammatory marker
     HIGH or CRITICAL blood pressure   -> problem: hypertension
-    HIGH glucose + HIGH HbA1c         -> problem: diabetes mellitus
+    HIGH glucose + HIGH HbA1c         -> problem: type 2 diabetes mellitus with hyperglycemia
+      (ICD-10-CM default: when report does not state Type 1 explicitly, ALWAYS use "type 2")
     LOW hemoglobin + LOW hematocrit   -> problem: anemia
 - Only generate a measurement-descriptor problem when no clinical diagnosis can be
   concluded from the value and its clinical context.
+
+CKD STAGING (when eGFR is reported):
+- eGFR >= 90 -> stage 1; eGFR 60-89 -> stage 2; eGFR 45-59 -> stage 3a;
+  eGFR 30-44 -> stage 3b; eGFR 15-29 -> stage 4; eGFR < 15 -> stage 5
+- ALWAYS include the sub-stage (3a/3b) in the problem name when eGFR is reported.
+  Correct: "chronic kidney disease stage 3b"
+  Wrong:   "chronic kidney disease stage 3"
 
 COMBINATION CONDITIONS AND MULTI-ORGAN INVOLVEMENT:
 - When ABNORMAL RESULTS contains flagged values from two or more different organ
@@ -154,6 +165,7 @@ def plan_queries(
 {note}
 
 Return STRICT JSON now."""
+    logger.info("Planner: sending %d-char clinical note to %s", len(note), model)
     text = chat_completion(
         model=model,
         api_key=openrouter_api_key,
@@ -162,8 +174,9 @@ Return STRICT JSON now."""
             {"role": "user", "content": user_msg},
         ],
         temperature=0.0,
-        max_tokens=1500,
+        max_tokens=2500,
     )
+    logger.info("Planner: raw LLM response (%d chars): %.500s", len(text), text)
 
     cleaned = _strip_code_fences(text)
 
@@ -178,13 +191,17 @@ Return STRICT JSON now."""
             try:
                 data = json.loads(cleaned[s: e + 1])
             except json.JSONDecodeError:
+                logger.warning("Planner: JSON parse failed even after brace extraction. Cleaned: %.300s", cleaned)
                 data = {}
         else:
+            logger.warning("Planner: no JSON braces found in response. Cleaned: %.300s", cleaned)
             data = {}
 
     problems = data.get("problems", [])
     if not isinstance(problems, list):
+        logger.warning("Planner: 'problems' key is not a list: %s", type(problems))
         return []
+    logger.info("Planner: parsed %d raw problems from LLM", len(problems))
 
     # Cross-problem dedupe (queries MUST NOT repeat across problems) :contentReference[oaicite:3]{index=3}
     used_queries = set()

@@ -108,15 +108,29 @@ class OpenRouterEmbedder:
         for i in range(0, len(texts), self.batch_size):
             batch = texts[i : i + self.batch_size]
             payload = {"model": self.model, "input": batch}
-            try:
-                resp = requests.post(
-                    OPENROUTER_EMBEDDINGS_URL,
-                    headers=headers,
-                    json=payload,
-                    timeout=60,
-                )
-            except requests.RequestException as exc:
-                raise OpenRouterError(f"Embeddings request failed: {exc}") from exc
+            resp = None
+            for attempt in range(3):
+                try:
+                    resp = requests.post(
+                        OPENROUTER_EMBEDDINGS_URL,
+                        headers=headers,
+                        json=payload,
+                        timeout=120,
+                    )
+                    break
+                except requests.exceptions.ReadTimeout:
+                    if attempt < 2:
+                        import time as _t
+                        _t.sleep(5 * (attempt + 1))
+                        continue
+                    raise OpenRouterError(
+                        f"Embeddings request timed out after 3 attempts (batch {i//self.batch_size + 1})"
+                    )
+                except requests.RequestException as exc:
+                    raise OpenRouterError(f"Embeddings request failed: {exc}") from exc
+
+            if resp is None:
+                raise OpenRouterError("Embeddings request returned no response")
 
             if resp.status_code >= 400:
                 raise OpenRouterError(

@@ -214,31 +214,75 @@ def retrieve_all_candidates(
     lexical_weight: float = 0.25,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, List[Dict[str, Any]]], Dict[str, List[Dict[str, Any]]]]:
     """
+    Batch-optimised retrieval: embeds ALL queries across ALL problems in a
+    single API call, then runs per-problem Pinecone queries + RRF re-ranking.
+
     Returns:
-      merged_candidates (global)
-      grouped_by_problem (for UI)
-      candidates_by_problem (BEST for selector to avoid cross-problem contamination)
+      merged_candidates       — global de-duplicated list
+      grouped_by_problem      — for UI
+      candidates_by_problem   — per-problem list (best for selector)
     """
-    results_by_problem: List[Tuple[str, List[Dict[str, Any]]]] = []
-    candidates_by_problem: Dict[str, List[Dict[str, Any]]] = {}
+    # ── Collect every query from every problem ────────────────────────────────
+    flat_queries: List[str] = []
+    problem_slices: List[Tuple[str, List[str], int, int]] = []
 
     for p in planned_problems:
         prob = (p.get("problem") or "").strip()
-        queries = p.get("queries") or []
-        if not prob or not isinstance(queries, list) or not queries:
+        queries = [q for q in (p.get("queries") or []) if (q or "").strip()]
+        if not prob or not queries:
             continue
+        start = len(flat_queries)
+        flat_queries.extend(queries)
+        problem_slices.append((prob, queries, start, len(queries)))
 
-        cands = retrieve_candidates_for_problem(
-            index=index,
-            namespace=namespace,
-            embed_model=embed_model,
-            problem=prob,
-            queries=queries,
-            top_k_per_query=top_k_per_query,
-            max_candidates_per_problem=max_candidates_per_problem,
-            where=where,
-            lexical_weight=lexical_weight,
-        )
+    # ── Single batch embedding call (1 HTTP round-trip) ───────────────────────
+    all_vectors: List[List[float]] = (
+        embed_texts(embed_model, flat_queries) if flat_queries else []
+    )
+
+    # ── Per-problem: Pinecone query → RRF fusion → lexical re-rank ────────────
+    results_by_problem: List[Tuple[str, List[Dict[str, Any]]]] = []
+    candidates_by_problem: Dict[str, List[Dict[str, Any]]] = {}
+
+    for prob, queries, start, count in problem_slices:
+        vectors = all_vectors[start : start + count]
+
+        results_per_query: List[List[Dict[str, Any]]] = []
+        raw_by_code: Dict[str, Dict[str, Any]] = {}
+
+        for q, v in zip(queries, vectors):
+            hits = pinecone_query(
+                index=index,
+                namespace=namespace,
+                vector=v,
+                top_k=top_k_per_query,
+                where=where,
+            )
+            results_per_query.append(hits)
+            for h in hits:
+                code = h["id"]
+                if code not in raw_by_code:
+                    raw_by_code[code] = h
+
+        rrf = _rrf_fuse(results_per_query, k=60)
+
+        scored: List[Dict[str, Any]] = []
+        for code, base_rrf in rrf.items():
+            h = raw_by_code.get(code, {"id": code, "score": 0.0, "metadata": {}})
+            md = h.get("metadata") or {}
+            title = md.get("title", "") if isinstance(md, dict) else ""
+            lex = max((_lexical_score(q, title) for q in queries), default=0.0)
+            final = (1.0 - lexical_weight) * base_rrf + lexical_weight * lex
+            scored.append({
+                "id": code,
+                "score": float(final),
+                "metadata": md,
+                "title": title,
+                "problem": prob,
+            })
+
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        cands = scored[:max_candidates_per_problem]
         candidates_by_problem[prob] = cands
         results_by_problem.append((prob, cands))
 

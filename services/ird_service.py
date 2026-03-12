@@ -7,11 +7,20 @@ Pipeline
 --------
 1. Fetch discharge + patient + reports (with descriptions) + bills + medications from DB
 2. Format report descriptions into a structured clinical note
-3. Call ICD-10 RAG pipeline in-process (reuses loaded embedder + Pinecone index)
-4. Call Groq LLM (2 calls) to align findings -> ICD evidence and bill -> findings
+3. ICD-10 RAG pipeline: Planner → batch-embed → Pinecone retrieve → Selector
+4. Groq LLM alignment (2 calls, merged from original 3):
+     Call 1 — ICD evidence (findings per code + clinical summary)
+     Call 2 — Bill linking (procedures + drugs → test findings)  [merged]
 5. Generate PDF using ReportLab (Python-native, no system binaries needed)
 6. Upload PDF buffer to Cloudinary -> ird_documents/ folder
 7. Return result dict
+
+Performance notes
+-----------------
+  - All embedding queries are batched into a single API call (retriever)
+  - Groq sleeps are conditional: only wait if LLM fallback consumed tokens
+  - Calls 2+3 merged into one Groq request → one fewer round-trip
+  - Step-level timing logged for every pipeline stage
 
 Layout (sections in order)
 ---------------------------
@@ -51,12 +60,15 @@ import io
 import json
 import logging
 import re
-import time
+import threading
+import time as _time_mod
 from collections import defaultdict
 from datetime import datetime
+from time import perf_counter as _pc
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
+import requests as _http
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
@@ -69,6 +81,50 @@ from models.report import Report
 
 logger = logging.getLogger(__name__)
 TIMEZONE = ZoneInfo("Asia/Kolkata")
+
+# Per-discharge result cache with TTL — prevents duplicate concurrent pipeline runs.
+# When two requests hit the same discharge_id, the first generates; the second waits
+# and reuses the cached result instead of re-running the full pipeline.
+_result_cache: Dict[int, Tuple[float, Any]] = {}   # discharge_id -> (expire_ts, result)
+_result_cache_lock = threading.Lock()
+_CACHE_TTL = 120  # seconds
+
+
+def _cache_get(discharge_id: int) -> Optional[Any]:
+    with _result_cache_lock:
+        entry = _result_cache.get(discharge_id)
+        if entry and entry[0] > _time_mod.time():
+            return entry[1]
+        _result_cache.pop(discharge_id, None)
+        return None
+
+
+def _cache_set(discharge_id: int, result: Any) -> None:
+    with _result_cache_lock:
+        _result_cache[discharge_id] = (_time_mod.time() + _CACHE_TTL, result)
+
+
+# Per-discharge generation lock — serializes concurrent requests for the same discharge
+_discharge_locks: Dict[int, threading.Lock] = {}
+_discharge_locks_guard = threading.Lock()
+
+
+def _get_discharge_lock(discharge_id: int) -> threading.Lock:
+    with _discharge_locks_guard:
+        if discharge_id not in _discharge_locks:
+            _discharge_locks[discharge_id] = threading.Lock()
+        return _discharge_locks[discharge_id]
+
+# Keyword set for identifying drug vs procedure bill line items (used in two places)
+DRUG_FORM_KEYWORDS: frozenset[str] = frozenset({
+    "tablet", "capsule", "injection", "syrup", "solution", "cream",
+    "patch", "inhaler", "suppository", "drops", "gel", "vial",
+    "ampoule", "sachet", "powder", "lotion", "mg ", "mcg ", "iu ",
+})
+
+# Groq API settings
+_GROQ_URL   = "https://api.groq.com/openai/v1/chat/completions"
+_GROQ_MODEL = "openai/gpt-oss-120b"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -114,11 +170,41 @@ def _safe_text(text: str) -> str:
 
 
 def _safe_json_loads(text: str) -> Any:
-    """Strip markdown fences then parse JSON."""
+    """Strip markdown fences then parse JSON. Recovers truncated output."""
     text = text.strip()
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
-    return json.loads(text)
+
+    # Attempt 1: parse as-is
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Attempt 2: extract outermost { ... } or [ ... ]
+    for open_ch, close_ch in [("{", "}"), ("[", "]")]:
+        start = text.find(open_ch)
+        end = text.rfind(close_ch)
+        if start != -1 and end != -1 and end > start:
+            try:
+                return json.loads(text[start : end + 1])
+            except json.JSONDecodeError:
+                pass
+
+    # Attempt 3: truncated JSON — close open brackets and retry
+    trimmed = text.rstrip()
+    open_braces = trimmed.count("{") - trimmed.count("}")
+    open_brackets = trimmed.count("[") - trimmed.count("]")
+    # Strip trailing incomplete key/value (after last comma or colon)
+    trimmed = re.sub(r'[,:]\s*"[^"]*$', '', trimmed)
+    trimmed = re.sub(r',\s*$', '', trimmed)
+    trimmed += "}" * max(0, open_braces) + "]" * max(0, open_brackets)
+    try:
+        return json.loads(trimmed)
+    except json.JSONDecodeError:
+        pass
+
+    raise json.JSONDecodeError("Cannot recover JSON", text, 0)
 
 
 def _trunc(s: str, n: int = 52) -> str:
@@ -207,8 +293,6 @@ def _call_icd_lookup_llm_fallback(clinical_note: str) -> List[Dict[str, str]]:
     Returns list of {"code": str, "title": str, "rationale": str}.
     Raises on any failure so the caller can decide how to handle it.
     """
-    import requests as _http
-
     prompt = (
         "You are a certified medical coder (CPC). Based on the clinical findings and lab results "
         "below, assign the most appropriate ICD-10-CM diagnosis codes.\n\n"
@@ -222,22 +306,29 @@ def _call_icd_lookup_llm_fallback(clinical_note: str) -> List[Dict[str, str]]:
         "- Only include codes with clear evidence in the provided findings\n"
         "Respond ONLY with a valid compact JSON array — no markdown, no explanation."
     )
-    r = _http.post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {settings.GROQ_API_KEY}",
-            "Content-Type":  "application/json",
-        },
-        json={
-            "model": "openai/gpt-oss-120b",
-            "messages": [
-                {"role": "system", "content": "You are a certified medical coder. Respond only with valid JSON."},
-                {"role": "user",   "content": prompt},
-            ],
-            "max_tokens": 2000,
-        },
-        timeout=60,
-    )
+    body = {
+        "model": _GROQ_MODEL,
+        "messages": [
+            {"role": "system", "content": "You are a certified medical coder. Respond only with valid JSON."},
+            {"role": "user",   "content": prompt},
+        ],
+        "max_tokens": 4000,
+    }
+    headers = {
+        "Authorization": f"Bearer {settings.GROQ_API_KEY}",
+        "Content-Type":  "application/json",
+    }
+
+    r = None
+    for attempt in range(3):
+        r = _http.post(_GROQ_URL, headers=headers, json=body, timeout=60)
+        if r.status_code == 429 and attempt < 2:
+            _wait = 20 * (attempt + 1)
+            logger.warning("LLM fallback 429 — backing off %ds (attempt %d/2)", _wait, attempt + 1)
+            _time_mod.sleep(_wait)
+            continue
+        break
+
     r.raise_for_status()
     data = _safe_json_loads(r.json()["choices"][0]["message"]["content"])
     codes: List[Dict[str, str]] = []
@@ -253,28 +344,71 @@ def _call_icd_lookup_llm_fallback(clinical_note: str) -> List[Dict[str, str]]:
     return codes
 
 
-def _call_icd_lookup(clinical_note: str) -> Tuple[List[Dict[str, str]], bool]:
+_ird_embedder = None
+_ird_pinecone_index = None
+
+
+def _get_ird_embedder():
+    """Lazy-init embedder for IRD's own ICD-10 RAG calls."""
+    global _ird_embedder
+    if _ird_embedder is None:
+        from icd_rag_bot.rag.openrouter_client import OpenRouterEmbedder
+        logger.info("IRD: Initialising OpenRouter embedder (text-embedding-3-small)...")
+        _ird_embedder = OpenRouterEmbedder(
+            api_key=settings.OPENROUTER_API_KEY,
+            model="openai/text-embedding-3-small",
+        )
+        logger.info("IRD: OpenRouter embedder ready.")
+    return _ird_embedder
+
+
+def _get_ird_pinecone_index():
+    """Lazy-init Pinecone index for IRD's own ICD-10 RAG calls."""
+    global _ird_pinecone_index
+    if _ird_pinecone_index is None:
+        from icd_rag_bot.rag.retriever import get_index
+        logger.info("IRD: Connecting to Pinecone index '%s'...", settings.PINECONE_INDEX_NAME)
+        _ird_pinecone_index = get_index(settings.PINECONE_INDEX_NAME, settings.PINECONE_API_KEY)
+        logger.info("IRD: Pinecone index connected.")
+    return _ird_pinecone_index
+
+
+def _call_icd_lookup(clinical_note: str) -> Tuple[List[Dict[str, str]], bool, bool]:
     """
     Runs the ICD-10 RAG pipeline directly in-process.
     If RAG fails for any reason, falls back to direct Groq LLM coding.
-    Returns (icd_codes, icd_generation_failed).
-    icd_codes: list of {"code": str, "title": str, "rationale": str}
+
+    Returns:
+        (icd_codes, icd_generation_failed, used_groq_fallback)
     """
     # ── Primary: Pinecone RAG + OpenRouter ───────────────────────────────────
     try:
         from icd_rag_bot.rag.planner import plan_queries
         from icd_rag_bot.rag.retriever import retrieve_all_candidates
         from icd_rag_bot.rag.selector import select_codes
-        from routes.icd_routes import _get_embedder, _get_pinecone_index
 
-        embedder = _get_embedder()
-        index    = _get_pinecone_index()
+        embedder = _get_ird_embedder()
+        index    = _get_ird_pinecone_index()
 
+        t = _pc()
         planned = plan_queries(
             note=clinical_note,
             openrouter_api_key=settings.OPENROUTER_API_KEY,
             model=settings.OPENROUTER_MODEL,
         )
+        logger.info("IRD RAG planner: %d problems (%.1fs)", len(planned), _pc() - t)
+
+        if not planned:
+            raise RuntimeError("Planner returned 0 problems — nothing to retrieve")
+
+        # Keep only top 10 problems (by confidence) to limit embedding calls
+        _conf_rank = {"high": 0, "medium": 1, "low": 2}
+        planned.sort(key=lambda p: _conf_rank.get((p.get("confidence") or "low").lower(), 2))
+        if len(planned) > 10:
+            logger.info("IRD RAG: trimming planned problems from %d to 10", len(planned))
+            planned = planned[:10]
+
+        t = _pc()
         merged, grouped, candidates_by_problem = retrieve_all_candidates(
             planned_problems=planned,
             index=index,
@@ -285,6 +419,15 @@ def _call_icd_lookup(clinical_note: str) -> Tuple[List[Dict[str, str]], bool]:
             where=None,
             lexical_weight=0.25,
         )
+        logger.info(
+            "IRD RAG retriever: %d merged / %d problems (%.1fs)",
+            len(merged), len(candidates_by_problem), _pc() - t,
+        )
+
+        if not merged:
+            raise RuntimeError("Retriever returned 0 candidates — Pinecone may be empty or namespace mismatch")
+
+        t = _pc()
         selected = select_codes(
             note=clinical_note,
             planned_problems=planned,
@@ -294,6 +437,7 @@ def _call_icd_lookup(clinical_note: str) -> Tuple[List[Dict[str, str]], bool]:
             model=settings.OPENROUTER_MODEL,
             max_codes_per_problem=3,
         )
+        logger.info("IRD RAG selector: (%.1fs) %s", _pc() - t, json.dumps(selected, default=str)[:500])
 
         codes: List[Dict[str, str]] = []
         for result in selected.get("results", []):
@@ -308,14 +452,15 @@ def _call_icd_lookup(clinical_note: str) -> Tuple[List[Dict[str, str]], bool]:
 
         if codes:
             logger.info("IRD: RAG returned %d ICD codes", len(codes))
-            return codes, False
+            return codes, False, False
 
         # RAG returned 0 codes — try LLM fallback before giving up
         logger.warning("IRD: RAG pipeline succeeded but returned 0 codes; trying LLM fallback")
 
     except Exception as exc:
         logger.warning(
-            "ICD-10 RAG lookup failed (%s); trying direct LLM fallback", exc
+            "ICD-10 RAG lookup failed (%s); trying direct LLM fallback", exc,
+            exc_info=True,
         )
 
     # ── Fallback: direct Groq LLM coding ────────────────────────────────────
@@ -323,12 +468,12 @@ def _call_icd_lookup(clinical_note: str) -> Tuple[List[Dict[str, str]], bool]:
         codes = _call_icd_lookup_llm_fallback(clinical_note)
         if codes:
             logger.info("IRD: LLM fallback returned %d ICD codes", len(codes))
-            return codes, False
+            return codes, False, True  # used_groq_fallback=True
         logger.error("IRD: LLM fallback returned 0 codes")
     except Exception as fb_exc:
         logger.error("ICD-10 LLM fallback also failed: %s", fb_exc, exc_info=True)
 
-    return [], True
+    return [], True, False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -398,54 +543,46 @@ def _call_llm_alignment(
     icd_codes: List[Dict],
     reports: List[Report],
     bills: List[Bill],
+    *,
+    used_groq_fallback: bool = False,
 ) -> Dict[str, List]:
     """
-    3 sequential Groq API calls:
-      Call 1 — per ICD code: which test findings support it + clinical reason
-      Call 2 — non-drug bill line items (procedures/tests) -> linked test finding
-      Call 3 — drug/medication bill line items -> which test result clinically
-                justifies prescribing that drug
+    2 OpenRouter API calls (routed through gemini-2.5-flash):
 
-    Returns:
-        {
-          "evidence_by_icd":    [...],
-          "bill_report_links":  [...],   # procedures/tests
-          "drug_finding_links": [...],   # medications -> test finding
-        }
+      Call 1 — per ICD code: which test findings support it + clinical summary
+      Call 2 — ALL bill line items (procedures + drugs) -> linked test finding
+
+    Uses OpenRouter instead of Groq to avoid Groq's 8K TPM rate limit, which
+    was causing 429 failures on large patients (60+ findings, 10 ICD codes).
+
+    Returns dict with keys: evidence_by_icd, bill_report_links, drug_finding_links.
     Never raises — returns empty lists on any failure.
     """
-    import requests as _http
-    import time as _time
+    from icd_rag_bot.rag.openrouter_client import chat_completion as _or_chat
 
-    GROQ_URL   = "https://api.groq.com/openai/v1/chat/completions"
-    GROQ_MODEL = "openai/gpt-oss-120b"
-    SYSTEM = (
+    _SYSTEM = (
         "You are a clinical pharmacist and medical billing expert preparing an Insurance Ready "
         "Document (IRD). Your job is to link medications and procedures to the test results that "
         "clinically justify them. Be specific: name the exact test and result value. "
         "Respond ONLY with valid compact JSON -- no markdown, no explanation, no preamble."
     )
-    headers = {
-        "Authorization": f"Bearer {settings.GROQ_API_KEY}",
-        "Content-Type":  "application/json",
-    }
 
     def _post(prompt: str, max_tokens: int = 4000) -> Any:
-        r = _http.post(
-            GROQ_URL,
-            headers=headers,
-            json={
-                "model":      GROQ_MODEL,
-                "messages":   [
-                    {"role": "system", "content": SYSTEM},
-                    {"role": "user",   "content": prompt},
-                ],
-                "max_tokens": max_tokens,
-            },
-            timeout=60,
+        """Call OpenRouter for alignment."""
+        text = _or_chat(
+            model=settings.OPENROUTER_MODEL,
+            api_key=settings.OPENROUTER_API_KEY,
+            messages=[
+                {"role": "system", "content": _SYSTEM},
+                {"role": "user",   "content": prompt},
+            ],
+            temperature=0.0,
+            max_tokens=max_tokens,
         )
-        r.raise_for_status()
-        return _safe_json_loads(r.json()["choices"][0]["message"]["content"])
+        if not text or not text.strip():
+            logger.warning("OpenRouter returned empty content for alignment call")
+            return {}
+        return _safe_json_loads(text)
 
     def _to_list(data: Any, key: str) -> List:
         if isinstance(data, dict):
@@ -454,9 +591,8 @@ def _call_llm_alignment(
             return data
         return []
 
-    # Build full all-findings list (flagged + normal) for drug linking —
-    # a drug may be justified by a normal result too (e.g. maintenance therapy)
-    all_findings_for_drugs = []
+    # ── Build findings payloads ───────────────────────────────────────────────
+    all_findings_for_drugs: List[Dict] = []
     for rpt in reports:
         for desc in rpt.descriptions or []:
             result = desc.abnormal_result or desc.normal_result or "N/A"
@@ -474,13 +610,17 @@ def _call_llm_alignment(
             })
 
     abnormal_findings = _build_abnormal_findings(reports)
-    icd_json          = json.dumps(icd_codes)
-    findings_json     = json.dumps(abnormal_findings)
+    icd_json      = json.dumps(icd_codes)
+    findings_json = json.dumps(abnormal_findings)
+
+    # Limit findings payload: all abnormal + first 20 normal
+    _abn = [f for f in all_findings_for_drugs if f.get("flag") != "NORMAL"]
+    _nrm = [f for f in all_findings_for_drugs if f.get("flag") == "NORMAL"][:20]
+    all_findings_for_drugs = _abn + _nrm
+    logger.info("IRD alignment: %d findings (%d abnormal + %d normal)",
+                len(all_findings_for_drugs), len(_abn), len(_nrm))
 
     # Separate bill items: drugs vs procedures
-    drug_forms_kw = {"tablet", "capsule", "injection", "syrup", "solution", "cream",
-                     "patch", "inhaler", "suppository", "drops", "gel", "vial",
-                     "ampoule", "sachet", "powder", "lotion", "mg ", "mcg ", "iu "}
     drug_bill_items: List[Dict] = []
     proc_bill_items: List[Dict] = []
     for bill in bills:
@@ -492,14 +632,21 @@ def _call_llm_alignment(
                 "total_price": float(desc.total_price or 0),
             }
             desc_lower = (desc.description or "").lower()
-            if any(kw in desc_lower for kw in drug_forms_kw):
+            if any(kw in desc_lower for kw in DRUG_FORM_KEYWORDS):
                 drug_bill_items.append(row)
             else:
                 proc_bill_items.append(row)
 
-    # ── Call 1: Per ICD code — supporting findings and clinical reason ─────────
+    if len(proc_bill_items) > 30:
+        logger.info("IRD alignment: truncating proc_bill_items from %d to 30", len(proc_bill_items))
+        proc_bill_items = proc_bill_items[:30]
+
+    # ── OpenRouter alignment calls (no rate-limit issues) ─────────────────────
+
+    # ── Call 1: Per ICD code — supporting findings + clinical reason ──────
     evidence_by_icd: List = []
     try:
+        t = _pc()
         data1 = _post(
             "Given these ICD-10 diagnosis codes:\n"
             f"{icd_json}\n\n"
@@ -515,66 +662,76 @@ def _call_llm_alignment(
             "Include ALL input ICD codes."
         )
         evidence_by_icd = _to_list(data1, "evidence_by_icd")
-        logger.info("IRD LLM Call 1: evidence for %d ICD codes", len(evidence_by_icd))
+        logger.info("IRD alignment Call 1: %d ICD evidence entries (%.1fs)", len(evidence_by_icd), _pc() - t)
     except Exception as exc:
-        logger.warning("IRD LLM Call 1 (evidence_by_icd) failed: %s", exc)
+        logger.warning("IRD alignment Call 1 (evidence_by_icd) failed: %s", exc, exc_info=True)
 
-    _time.sleep(1)
-
-    # ── Call 2: Non-drug bill line items -> linked test finding ────────────────
+    # ── Call 2: ALL bill items (procedures + drugs) → linked findings ─────
     bill_report_links: List = []
-    if proc_bill_items:
-        try:
-            data2 = _post(
-                "Given these procedure / service bill line items:\n"
-                f"{json.dumps(proc_bill_items)}\n\n"
-                "And these abnormal test findings:\n"
-                f"{findings_json}\n\n"
-                'Return a JSON array named "bill_report_links". Each element:\n'
-                '{"cpt_code":str,"description":str,"total_amount":str,'
-                '"linked_finding":str|null,"linked_report":str|null}\n'
-                "linked_finding = the specific test name and result value that made this procedure "
-                "necessary (e.g. 'HbA1c: 9.2% HIGH'). "
-                "Set to null when no clear clinical link exists."
-            )
-            bill_report_links = _to_list(data2, "bill_report_links")
-            logger.info("IRD LLM Call 2: %d bill_report_links", len(bill_report_links))
-        except Exception as exc:
-            logger.warning("IRD LLM Call 2 (proc->finding) failed: %s", exc)
-
-    _time.sleep(1)
-
-    # ── Call 3: Drug bill items -> which test result clinically justifies them ─
-    # This is the key call that fills the empty Linked Finding for medications.
     drug_finding_links: List = []
-    if drug_bill_items:
-        try:
-            data3 = _post(
-                "You are reviewing discharge prescriptions for insurance justification.\n\n"
-                "These medications were dispensed and billed:\n"
-                f"{json.dumps(drug_bill_items)}\n\n"
-                "These are ALL the test results available for this patient:\n"
-                f"{json.dumps(all_findings_for_drugs)}\n\n"
-                "These are the ICD-10 diagnoses assigned:\n"
-                f"{icd_json}\n\n"
-                'Return a JSON array named "drug_finding_links". Each element covers ONE drug:\n'
-                '{"description":str, "linked_finding":str, "linked_report":str, "icd_code":str}\n'
-                "CRITICAL: 'description' MUST be copied EXACTLY character-for-character "
-                "from the input medication list — never paraphrase, abbreviate, or alter it.\n"
-                "linked_finding = the SPECIFIC test name + result value from the patient results "
-                "above that most directly justifies prescribing this drug "
-                "(e.g. 'HbA1c: 9.2% HIGH', 'Fasting Glucose: 340 mg/dL HIGH', "
-                "'TSH: 8.4 mIU/L HIGH', 'eGFR: 58 mL/min LOW'). "
-                "linked_report = name of the report that test came from. "
-                "icd_code = the single ICD code this drug most directly treats. "
-                "Every drug MUST have a linked_finding — use the most relevant test "
-                "even if the link is indirect. Never return null for linked_finding. "
-                "Return exactly one entry per input drug (same count as the input list)."
+
+    has_proc = bool(proc_bill_items)
+    has_drug = bool(drug_bill_items)
+
+    if has_proc or has_drug:
+        prompt_parts = [
+            "You are linking bill line items to clinical test results for insurance justification.\n"
+        ]
+
+        if has_proc:
+            prompt_parts.append(
+                "SECTION A — Procedure / service bill items:\n"
+                f"{json.dumps(proc_bill_items)}\n"
             )
-            drug_finding_links = _to_list(data3, "drug_finding_links")
-            logger.info("IRD LLM Call 3: %d drug_finding_links", len(drug_finding_links))
+        if has_drug:
+            prompt_parts.append(
+                "SECTION B — Medication / drug bill items:\n"
+                f"{json.dumps(drug_bill_items)}\n"
+            )
+
+        prompt_parts.append(
+            "\nAll available test results for this patient:\n"
+            f"{json.dumps(all_findings_for_drugs)}\n\n"
+            "ICD-10 diagnoses assigned:\n"
+            f"{icd_json}\n\n"
+            "Return a single JSON object with two arrays:\n"
+        )
+
+        if has_proc:
+            prompt_parts.append(
+                '"bill_report_links": one entry per procedure item:\n'
+                '  {"cpt_code":str,"description":str,"total_amount":str,'
+                '"linked_finding":str|null,"linked_report":str|null}\n'
+                '  linked_finding = specific test name + result value that made the procedure '
+                "necessary (e.g. 'HbA1c: 9.2% HIGH'). null if no clear link.\n"
+            )
+        else:
+            prompt_parts.append('"bill_report_links": [] (empty — no procedure items)\n')
+
+        if has_drug:
+            prompt_parts.append(
+                '"drug_finding_links": one entry per drug item:\n'
+                '  {"description":str,"linked_finding":str,"linked_report":str,"icd_code":str}\n'
+                "  CRITICAL: 'description' MUST be copied EXACTLY from the input list.\n"
+                "  linked_finding = SPECIFIC test name + result value that justifies the drug "
+                "(e.g. 'HbA1c: 9.2% HIGH'). Never null.\n"
+                "  linked_report = name of the report that test came from.\n"
+                "  icd_code = the single ICD code this drug most directly treats.\n"
+            )
+        else:
+            prompt_parts.append('"drug_finding_links": [] (empty — no drug items)\n')
+
+        try:
+            t = _pc()
+            data2 = _post("\n".join(prompt_parts), max_tokens=6000)
+            bill_report_links  = _to_list(data2, "bill_report_links")
+            drug_finding_links = _to_list(data2, "drug_finding_links")
+            logger.info(
+                "IRD alignment Call 2: %d bill_report_links, %d drug_finding_links (%.1fs)",
+                len(bill_report_links), len(drug_finding_links), _pc() - t,
+            )
         except Exception as exc:
-            logger.warning("IRD LLM Call 3 (drug->finding) failed: %s", exc)
+            logger.warning("IRD alignment Call 2 (bill+drug linking) failed: %s", exc, exc_info=True)
 
     return {
         "evidence_by_icd":    evidence_by_icd    if isinstance(evidence_by_icd,    list) else [],
@@ -634,14 +791,11 @@ def _categorise_bill_item(description: str, cpt_code: str) -> str:
         return hcpcs_map[prefix]
 
     desc_lower  = (description or "").lower()
-    drug_forms  = ["tablet", "capsule", "injection", "syrup", "solution", "cream",
-                   "patch", "inhaler", "suppository", "drops", "gel", "vial",
-                   "ampoule", "sachet", "powder", "lotion"]
     admin_terms = ["consultation", "counseling", "counselling", "dispensing",
                    "handling", "filing", "reminder", "setup", "activation",
                    "document", "review service", "outpatient visit"]
 
-    if any(k in desc_lower for k in drug_forms):
+    if any(k in desc_lower for k in DRUG_FORM_KEYWORDS):
         return "Medications & Dispensing"
     if any(k in desc_lower for k in admin_terms):
         return "Administrative & Consultation"
@@ -1402,7 +1556,7 @@ def _upload_to_cloudinary(pdf_bytes: bytes, discharge_id: int, patient_id: int) 
     try:
         result = CloudinaryStorage.upload_pdf(
             file=io.BytesIO(pdf_bytes),
-            filename=f"IRD_{discharge_id}_{int(time.time())}.pdf",
+            filename=f"IRD_{discharge_id}_{int(_time_mod.time())}.pdf",
             document_type="ird",
             patient_id=patient_id,
         )
@@ -1485,14 +1639,51 @@ def generate_ird(discharge_id: int, db: Session) -> Dict[str, Any]:
         ValueError:   if discharge not found or no reports exist
         RuntimeError: if Cloudinary upload fails after PDF is generated
     """
+    cached = _cache_get(discharge_id)
+    if cached is not None:
+        logger.info("IRD [%s] returning cached result", discharge_id)
+        return cached
+
+    lock = _get_discharge_lock(discharge_id)
+    if not lock.acquire(blocking=False):
+        logger.info("IRD [%s] already in-flight — waiting for existing run", discharge_id)
+        lock.acquire()
+        # After acquiring, check cache again — the first run may have finished
+        cached = _cache_get(discharge_id)
+        if cached is not None:
+            lock.release()
+            logger.info("IRD [%s] returning cached result (post-wait)", discharge_id)
+            return cached
+    try:
+        result = _generate_ird_inner(discharge_id, db)
+        _cache_set(discharge_id, result)
+        return result
+    finally:
+        lock.release()
+
+
+def _generate_ird_inner(discharge_id: int, db: Session) -> Dict[str, Any]:
+    t_total = _pc()
+
+    t = _pc()
     discharge, patient, reports, bills, medications_payload = _fetch_all_data(
         discharge_id, db
     )
+    logger.info("IRD [%s] DB fetch: %.1fs", discharge_id, _pc() - t)
 
-    clinical_note         = _format_reports_to_clinical_text(reports)
-    icd_codes, icd_failed = _call_icd_lookup(clinical_note)
-    alignment             = _call_llm_alignment(icd_codes, reports, bills)
+    t = _pc()
+    clinical_note = _format_reports_to_clinical_text(reports)
+    logger.info("IRD [%s] clinical note: %.1fs (%d chars)", discharge_id, _pc() - t, len(clinical_note))
 
+    t = _pc()
+    icd_codes, icd_failed, used_groq = _call_icd_lookup(clinical_note)
+    logger.info("IRD [%s] ICD lookup: %.1fs (%d codes, fallback=%s)", discharge_id, _pc() - t, len(icd_codes), used_groq)
+
+    t = _pc()
+    alignment = _call_llm_alignment(icd_codes, reports, bills, used_groq_fallback=used_groq)
+    logger.info("IRD [%s] alignment: %.1fs", discharge_id, _pc() - t)
+
+    t = _pc()
     pdf_bytes = _generate_pdf(
         patient=patient,
         discharge=discharge,
@@ -1502,11 +1693,16 @@ def generate_ird(discharge_id: int, db: Session) -> Dict[str, Any]:
         bills=bills,
         alignment=alignment,
     )
+    logger.info("IRD [%s] PDF gen: %.1fs (%d bytes)", discharge_id, _pc() - t, len(pdf_bytes))
 
+    t = _pc()
     ird_url = _upload_to_cloudinary(pdf_bytes, discharge_id, patient.id)
+    logger.info("IRD [%s] upload: %.1fs", discharge_id, _pc() - t)
 
     discharge.insurance_ready_url = ird_url
     db.commit()
+
+    logger.info("IRD [%s] TOTAL: %.1fs", discharge_id, _pc() - t_total)
 
     return {
         "success":               True,
@@ -1525,13 +1721,40 @@ def generate_ird_pdf_bytes(discharge_id: int, db: Session) -> Tuple[bytes, str]:
     Generates only the PDF (no Cloudinary upload) — used by the preview endpoint.
     Returns (pdf_bytes, patient_name).
     """
+    # Use a separate cache key namespace (negative) to avoid collisions with generate_ird
+    cache_key = -discharge_id
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        logger.info("IRD preview [%s] returning cached result", discharge_id)
+        return cached
+
+    lock = _get_discharge_lock(discharge_id)
+    if not lock.acquire(blocking=False):
+        logger.info("IRD preview [%s] already in-flight — waiting for existing run", discharge_id)
+        lock.acquire()
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            lock.release()
+            logger.info("IRD preview [%s] returning cached result (post-wait)", discharge_id)
+            return cached
+    try:
+        result = _generate_ird_pdf_bytes_inner(discharge_id, db)
+        _cache_set(cache_key, result)
+        return result
+    finally:
+        lock.release()
+
+
+def _generate_ird_pdf_bytes_inner(discharge_id: int, db: Session) -> Tuple[bytes, str]:
+    t_total = _pc()
+
     discharge, patient, reports, bills, medications_payload = _fetch_all_data(
         discharge_id, db
     )
 
-    clinical_note         = _format_reports_to_clinical_text(reports)
-    icd_codes, icd_failed = _call_icd_lookup(clinical_note)
-    alignment             = _call_llm_alignment(icd_codes, reports, bills)
+    clinical_note = _format_reports_to_clinical_text(reports)
+    icd_codes, icd_failed, used_groq = _call_icd_lookup(clinical_note)
+    alignment = _call_llm_alignment(icd_codes, reports, bills, used_groq_fallback=used_groq)
 
     pdf_bytes = _generate_pdf(
         patient=patient,
@@ -1542,4 +1765,6 @@ def generate_ird_pdf_bytes(discharge_id: int, db: Session) -> Tuple[bytes, str]:
         bills=bills,
         alignment=alignment,
     )
+
+    logger.info("IRD preview [%s] TOTAL: %.1fs", discharge_id, _pc() - t_total)
     return pdf_bytes, patient.full_name or f"discharge_{discharge_id}"
