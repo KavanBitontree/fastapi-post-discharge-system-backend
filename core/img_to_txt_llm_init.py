@@ -61,7 +61,10 @@ class HFInferenceChatModel(BaseChatModel):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._client = InferenceClient(api_key=self.hf_token)
+        self._client = InferenceClient(
+            provider="hf-inference",
+            api_key=self.hf_token,
+        )
 
     @property
     def _llm_type(self) -> str:
