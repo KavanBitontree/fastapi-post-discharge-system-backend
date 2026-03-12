@@ -18,12 +18,14 @@ class RegisterService:
     @staticmethod
     def create_new_patient(db: Session, data: RegisterRequest):
         hashed_pwd = RegisterService.hash_password(data.password)
+        combined_phone = f"{data.country_code}{data.phone_number}"
         new_patient = Patient(
             full_name=data.full_name,
             email=data.email,
             dob=data.dob,
             gender=data.gender,
-            password_hash=hashed_pwd 
+            password_hash=hashed_pwd,
+            phone_number=combined_phone
         )
         db.add(new_patient)
         db.commit()
