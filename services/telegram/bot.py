@@ -95,7 +95,9 @@ _OTP_SENT = (
 _INVALID_OTP_FORMAT = (
     "⚠️ I couldn't find a 6-digit OTP in your message.\n"
     "Please send <b>only the 6-digit code</b>.\n"
-    "Example: <code>123456</code>"
+    "Example: <code>123456</code> \n"
+    "if you want to resend the OTP, type /resend."
+
 )
 
 _WRONG_OTP = "❌ Incorrect OTP. You have <b>{attempts}</b> attempt(s) remaining."
