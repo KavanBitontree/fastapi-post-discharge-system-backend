@@ -42,10 +42,10 @@ TIMEZONE = ZoneInfo("Asia/Kolkata")
 MEAL_SLOTS: list[tuple[str, str, int]] = [
     ("before_breakfast", "Before Breakfast", 7),
     ("after_breakfast",  "After Breakfast",  8),
-    ("before_lunch",     "Before Lunch",     12),
-    ("after_lunch",      "After Lunch",      13),
-    ("before_dinner",    "Before Dinner",    19),
-    ("after_dinner",     "After Dinner",     20),
+    ("before_lunch",     "Before Lunch",     11),
+    ("after_lunch",      "After Lunch",      12),
+    ("before_dinner",    "Before Dinner",    18),
+    ("after_dinner",     "After Dinner",     21),
 ]
 
 SLOT_LABELS: dict[str, str] = {f: l for f, l, _ in MEAL_SLOTS}
@@ -218,6 +218,35 @@ def send_telegram_message(chat_id: str, body: str) -> bool:
     except Exception as exc:
         logger.error("Telegram reminder send failed → chat_id=%s : %s", chat_id, exc)
         return False
+
+
+# ─── Stale discharge purge ────────────────────────────────────────────────────
+
+def purge_stale_discharges(db: Session) -> int:
+    """
+    Delete discharge_history rows stuck in 'pending' or 'failed' for > 24 hours.
+    Returns the number of rows deleted.
+    """
+    from models.discharge_history import DischargeHistory
+
+    try:
+        cutoff = datetime.now(TIMEZONE) - timedelta(hours=24)
+        deleted = (
+            db.query(DischargeHistory)
+            .filter(
+                DischargeHistory.status.in_(["pending", "failed"]),
+                DischargeHistory.created_at <= cutoff,
+            )
+            .delete(synchronize_session=False)
+        )
+        db.commit()
+        if deleted:
+            logger.info("Purged %d stale discharge record(s) older than 24 h", deleted)
+        return deleted
+    except Exception as exc:
+        db.rollback()
+        logger.error("Stale discharge purge failed: %s", exc, exc_info=True)
+        return 0
 
 
 # ─── Core query ───────────────────────────────────────────────────────────────
