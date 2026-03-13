@@ -5,7 +5,7 @@ Pydantic schemas for discharge PDF retrieval responses.
 """
 
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Dict, Any
 
 
 class DischargePdfsResponse(BaseModel):
@@ -19,3 +19,24 @@ class DischargePdfsResponse(BaseModel):
     insurance_ready_url: Optional[str] = None
 
     model_config = {"from_attributes": True}
+
+
+class DischargeErrorResponse(BaseModel):
+    """Response schema for discharge processing errors."""
+    
+    message: str
+    discharge_id: int
+    status: str
+    error_type: str
+    error_title: str
+    error: str
+    progress: Dict[str, int]
+    failed_at: Dict[str, Any]
+
+
+class DischargeValidationResponse(BaseModel):
+    """Response schema for discharge file validation."""
+    
+    valid: bool
+    patient_id: int
+    file_counts: Dict[str, int]

@@ -38,7 +38,7 @@ from models.discharge_history import DischargeHistory
 from models.patient import Patient
 from services.discharge_service import DischargeResult, FileJob, run_discharge_queue, run_discharge_queue_in_background
 from controllers.discharge_pdf_controller import DischargePdfController
-from schemas.discharge_schemas import DischargePdfsResponse
+from schemas.discharge_schemas import DischargePdfsResponse, DischargeValidationResponse
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +148,58 @@ def _result_to_error_detail(result: DischargeResult) -> dict:
     }
 
 
+# ── POST /api/discharge/validate ─────────────────────────────────────────────
+
+@router.post("/validate", response_model=DischargeValidationResponse)
+async def validate_discharge_files(
+    patient_id:    int              = Form(..., description="ID of the patient"),
+    reports:       List[UploadFile] = File(default=[], description="Up to 15 medical report PDFs (max 15 pages each)"),
+    bills:         List[UploadFile] = File(default=[], description="Up to 5 bill PDFs (max 5 pages each)"),
+    prescriptions: List[UploadFile] = File(default=[], description="Up to 5 prescription PDFs (max 5 pages each)"),
+    db: Session = Depends(get_db),
+):
+    """
+    Validate discharge documents without processing them.
+    
+    Returns 200 if all files are valid, or 400/422 with detailed error info.
+    Use this before calling /process to catch validation errors early.
+    """
+    # ── Validate inputs ───────────────────────────────────────────────────────
+    try:
+        await _validate_pdf_files(reports,       "report",       MAX_REPORT_FILES,       MAX_REPORT_PAGES)
+        await _validate_pdf_files(bills,         "bill",         MAX_BILL_FILES,         MAX_BILL_PAGES)
+        await _validate_pdf_files(prescriptions, "prescription", MAX_PRESCRIPTION_FILES, MAX_PRESCRIPTION_PAGES)
+    except HTTPException as e:
+        # Re-raise validation errors so frontend can catch them
+        raise e
+
+    if not reports and not bills and not prescriptions:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one document must be uploaded.",
+        )
+
+    patient = db.query(Patient).filter(
+        Patient.id == patient_id,
+        Patient.is_active == True,
+    ).first()
+    if not patient:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Patient id={patient_id} not found or inactive.",
+        )
+
+    return {
+        "valid": True,
+        "patient_id": patient_id,
+        "file_counts": {
+            "reports": len(reports),
+            "bills": len(bills),
+            "prescriptions": len(prescriptions),
+        },
+    }
+
+
 # ── POST /api/discharge/process ───────────────────────────────────────────────
 
 @router.post("/process", status_code=status.HTTP_202_ACCEPTED)
@@ -155,18 +207,20 @@ async def process_discharge(
     background_tasks: BackgroundTasks,
     patient_id:    int              = Form(..., description="ID of the patient"),
     strategy:      str              = Form("auto", description="LLM extraction strategy: auto | text | vision"),
+    sync:          bool             = Form(False, description="Process synchronously for immediate error feedback"),
     reports:       List[UploadFile] = File(default=[], description="Up to 15 medical report PDFs (max 15 pages each)"),
     bills:         List[UploadFile] = File(default=[], description="Up to 5 bill PDFs (max 5 pages each)"),
     prescriptions: List[UploadFile] = File(default=[], description="Up to 5 prescription PDFs (max 5 pages each)"),
     db: Session = Depends(get_db),
 ):
     """
-    Upload all discharge documents and kick off background processing.
+    Upload all discharge documents and process them.
 
-    Returns 202 Accepted immediately with the discharge_id so the frontend
-    can start polling GET /api/discharge/{id}/status for live progress.
-    The queue processes: reports → bills → prescriptions (in order).
-    Each file is committed individually — if one fails, previous ones are kept.
+    If sync=False (default): Returns 202 Accepted immediately with discharge_id.
+    Poll GET /api/discharge/{id}/status for progress. Processing runs in background.
+
+    If sync=True: Processes files immediately and returns final result.
+    Returns 201 on success or 422 on failure with detailed error info.
     """
     # ── Validate inputs ───────────────────────────────────────────────────────
     await _validate_pdf_files(reports,       "report",       MAX_REPORT_FILES,       MAX_REPORT_PAGES)
@@ -203,19 +257,43 @@ async def process_discharge(
 
     all_jobs: List[FileJob] = report_jobs + bill_jobs + prescription_jobs
 
-    # ── Schedule background processing and return immediately ─────────────────
-    background_tasks.add_task(run_discharge_queue_in_background, discharge.id, all_jobs)
+    # ── Process synchronously or asynchronously ───────────────────────────────
+    if sync:
+        # Process immediately and return result
+        result = run_discharge_queue(db, discharge, all_jobs)
+        
+        if result.status == "failed":
+            # Return 422 with detailed error info
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=_result_to_error_detail(result),
+            )
+        
+        # Success - return 201
+        return {
+            "discharge_id": discharge.id,
+            "patient_id": patient_id,
+            "status": "completed",
+            "processed": {
+                "reports": result.processed_reports,
+                "bills": result.processed_bills,
+                "prescriptions": result.processed_prescriptions,
+            },
+        }
+    else:
+        # Schedule background processing and return immediately
+        background_tasks.add_task(run_discharge_queue_in_background, discharge.id, all_jobs)
 
-    return {
-        "discharge_id": discharge.id,
-        "patient_id":   patient_id,
-        "status":       "pending",
-        "total": {
-            "reports":       len(report_jobs),
-            "bills":         len(bill_jobs),
-            "prescriptions": len(prescription_jobs),
-        },
-    }
+        return {
+            "discharge_id": discharge.id,
+            "patient_id": patient_id,
+            "status": "pending",
+            "total": {
+                "reports": len(report_jobs),
+                "bills": len(bill_jobs),
+                "prescriptions": len(prescription_jobs),
+            },
+        }
 
 
 # ── POST /api/discharge/{discharge_id}/retry ──────────────────────────────────
@@ -225,6 +303,7 @@ async def retry_discharge(
     background_tasks: BackgroundTasks,
     discharge_id:  int              = ...,
     strategy:      str              = Form("auto"),
+    sync:          bool             = Form(False, description="Process synchronously for immediate error feedback"),
     reports:       List[UploadFile] = File(default=[], description="Remaining report PDFs (from failed index)"),
     bills:         List[UploadFile] = File(default=[], description="Remaining bill PDFs"),
     prescriptions: List[UploadFile] = File(default=[], description="Remaining prescription PDFs"),
@@ -233,8 +312,12 @@ async def retry_discharge(
     """
     Retry a failed discharge process.
 
-    Returns 202 Accepted immediately; processing continues in the background.
+    If sync=False (default): Returns 202 Accepted immediately; processing continues in background.
     Poll GET /api/discharge/{id}/status for live progress.
+
+    If sync=True: Processes files immediately and returns final result.
+    Returns 201 on success or 422 on failure with detailed error info.
+
     Upload only the files that have NOT yet been processed.
     The server reads the progress counters from the DB to know the correct
     starting index — files are indexed correctly for idempotent duplicate checks.
@@ -268,19 +351,43 @@ async def retry_discharge(
             detail="No files submitted for retry.",
         )
 
-    # ── Schedule background processing and return immediately ─────────────────
-    background_tasks.add_task(run_discharge_queue_in_background, discharge_id, all_jobs)
+    # ── Process synchronously or asynchronously ───────────────────────────────
+    if sync:
+        # Process immediately and return result
+        result = run_discharge_queue(db, discharge, all_jobs)
+        
+        if result.status == "failed":
+            # Return 422 with detailed error info
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=_result_to_error_detail(result),
+            )
+        
+        # Success - return 201
+        return {
+            "discharge_id": discharge_id,
+            "patient_id": discharge.patient_id,
+            "status": "completed",
+            "processed": {
+                "reports": result.processed_reports,
+                "bills": result.processed_bills,
+                "prescriptions": result.processed_prescriptions,
+            },
+        }
+    else:
+        # Schedule background processing and return immediately
+        background_tasks.add_task(run_discharge_queue_in_background, discharge_id, all_jobs)
 
-    return {
-        "discharge_id": discharge_id,
-        "patient_id":   discharge.patient_id,
-        "status":       "processing",
-        "total": {
-            "reports":       discharge.processed_reports + len(report_jobs),
-            "bills":         discharge.processed_bills + len(bill_jobs),
-            "prescriptions": discharge.processed_prescriptions + len(prescription_jobs),
-        },
-    }
+        return {
+            "discharge_id": discharge_id,
+            "patient_id": discharge.patient_id,
+            "status": "processing",
+            "total": {
+                "reports": discharge.processed_reports + len(report_jobs),
+                "bills": discharge.processed_bills + len(bill_jobs),
+                "prescriptions": discharge.processed_prescriptions + len(prescription_jobs),
+            },
+        }
 
 
 # ── GET /api/discharge/{discharge_id}/status ──────────────────────────────────
@@ -302,24 +409,45 @@ def get_discharge_status(discharge_id: int, db: Session = Depends(get_db)):
         "infra_error": "Temporary service error",
     }
 
+    # If processing failed, return 422 with error details so frontend can catch it
+    if discharge.status == "failed":
+        error_detail = {
+            "message": (
+                "Processing failed. Already-processed documents are saved. "
+                "You can retry with the remaining files."
+            ),
+            "discharge_id": discharge.id,
+            "status": discharge.status,
+            "error_type": discharge.error_type,
+            "error_title": _ERROR_TITLES.get(discharge.error_type or "", "Processing error"),
+            "error": discharge.failure_reason or "Unknown error occurred",
+            "progress": {
+                "processed_reports": discharge.processed_reports,
+                "processed_bills": discharge.processed_bills,
+                "processed_prescriptions": discharge.processed_prescriptions,
+            },
+            "failed_at": {
+                "type": discharge.failed_at_type,
+                "index": discharge.failed_at_index,
+            },
+        }
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=error_detail,
+        )
+
+    # Return normal status for pending/processing/completed
     resp: dict = {
-        "discharge_id":   discharge.id,
-        "patient_id":     discharge.patient_id,
+        "discharge_id": discharge.id,
+        "patient_id": discharge.patient_id,
         "discharge_date": discharge.discharge_date,
-        "status":         discharge.status,
+        "status": discharge.status,
         "processed": {
-            "reports":       discharge.processed_reports,
-            "bills":         discharge.processed_bills,
+            "reports": discharge.processed_reports,
+            "bills": discharge.processed_bills,
             "prescriptions": discharge.processed_prescriptions,
         },
     }
-
-    if discharge.status == "failed" and discharge.failure_reason:
-        resp["failure"] = {
-            "error_type":  discharge.error_type,
-            "error_title": _ERROR_TITLES.get(discharge.error_type or "", "Processing error"),
-            "reason":      discharge.failure_reason,
-        }
 
     return resp
 
