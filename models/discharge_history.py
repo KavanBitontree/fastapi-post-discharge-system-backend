@@ -20,8 +20,6 @@ class DischargeHistory(Base):
     # Failure details (populated on status=failed)
     error_type = Column(String(30), nullable=True)   # no_data | duplicate | parse_error | infra_error
     failure_reason = Column(Text, nullable=True)      # human-readable message shown to admin
-    failed_at_type = Column(String(20), nullable=True)  # report | bill | prescription
-    failed_at_index = Column(Integer, nullable=True)    # 0-based index within doc_type
     discharge_summary_url = Column(String, nullable=True)
     patient_friendly_summary_url = Column(String, nullable=True)
     insurance_ready_url = Column(String, nullable=True)

@@ -310,20 +310,10 @@ def run_discharge_queue(
                     f"{job.doc_type.capitalize()} #{job.index + 1} ('{job.filename}') "
                     f"failed due to an unexpected error. Please check the file and retry.",
                 )
-            
-            # Store detailed error information
             discharge.status = "failed"
             discharge.error_type = exc.error_type  # type: ignore[attr-defined]
             discharge.failure_reason = str(exc)
-            discharge.failed_at_type = job.doc_type
-            discharge.failed_at_index = job.index
             db.commit()
-
-            # Log the specific error type for debugging
-            logger.error(
-                "Discharge %d failed with error_type='%s': %s",
-                discharge.id, exc.error_type, str(exc)  # type: ignore[attr-defined]
-            )
 
             return DischargeResult(
                 discharge_id=discharge.id,
@@ -378,29 +368,11 @@ def run_discharge_queue_in_background(discharge_id: int, all_jobs: list[FileJob]
         if not discharge:
             logger.error("Background task: discharge id=%d not found", discharge_id)
             return
-        
-        logger.info("Starting background processing for discharge %d with %d jobs", discharge_id, len(all_jobs))
-        result = run_discharge_queue(db, discharge, all_jobs)
-        
-        if result.status == "completed":
-            logger.info("Background processing completed successfully for discharge %d", discharge_id)
-        else:
-            logger.error("Background processing failed for discharge %d: %s", discharge_id, result.error)
-            
+        run_discharge_queue(db, discharge, all_jobs)
     except Exception as exc:
         logger.error(
             "Background task uncaught error for discharge %d: %s",
             discharge_id, exc, exc_info=True,
         )
-        # Try to mark discharge as failed if possible
-        try:
-            discharge = db.query(DischargeHistory).filter(DischargeHistory.id == discharge_id).first()
-            if discharge and discharge.status not in ["completed", "failed"]:
-                discharge.status = "failed"
-                discharge.error_type = "infra_error"
-                discharge.failure_reason = f"Unexpected system error: {str(exc)}"
-                db.commit()
-        except Exception as db_exc:
-            logger.error("Failed to update discharge status after error: %s", db_exc)
     finally:
         db.close()

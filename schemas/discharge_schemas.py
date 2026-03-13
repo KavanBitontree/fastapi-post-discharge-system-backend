@@ -34,6 +34,17 @@ class DischargeErrorResponse(BaseModel):
     failed_at: Dict[str, Any]
 
 
+class DischargeStatusResponse(BaseModel):
+    """Response schema for discharge status polling."""
+    
+    discharge_id: int
+    patient_id: int
+    discharge_date: Optional[str] = None
+    status: str
+    processed: Dict[str, int]
+    error: Optional[Dict[str, Any]] = None  # Present only when status="failed"
+
+
 class DischargeValidationResponse(BaseModel):
     """Response schema for discharge file validation."""
     
