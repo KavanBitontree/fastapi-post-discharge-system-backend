@@ -10,6 +10,7 @@ from schemas.admin_schemas import (
     DashboardStatsResponse,
     DischargeHistoryResponse,
     DischargeDocumentsResponse,
+    AdminDischargePdfsResponse,
 )
 
 router = APIRouter(prefix="/admin", tags=["Admin Analytics"])
@@ -49,5 +50,27 @@ def get_discharge_documents(
     if not result:
         raise HTTPException(
             status_code=404, detail=f"Discharge {discharge_id} not found."
+        )
+    return result
+
+
+@router.get("/discharge/{discharge_id}/pdfs", response_model=AdminDischargePdfsResponse)
+def get_discharge_pdfs(
+    discharge_id: int,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(require_admin),
+):
+    """
+    Retrieve all three PDF Cloudinary URLs for any discharge (admin only).
+
+    Returns:
+    - **discharge_summary_url**: full hospital discharge summary PDF
+    - **patient_friendly_summary_url**: simplified patient-friendly report PDF
+    - **insurance_ready_url**: insurance-ready report PDF
+    """
+    result = AdminService.get_discharge_pdfs(db, discharge_id)
+    if not result:
+        raise HTTPException(
+            status_code=404, detail=f"Discharge {discharge_id} not found or not completed."
         )
     return result

@@ -115,4 +115,4 @@ class PatientDischargePdfsResponse(BaseModel):
     status: str
     discharge_summary_url: Optional[str]
     patient_friendly_summary_url: Optional[str]
-    insurance_ready_url: Optional[str]
+

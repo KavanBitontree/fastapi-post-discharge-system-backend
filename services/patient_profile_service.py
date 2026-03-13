@@ -269,7 +269,6 @@ class PatientProfileService:
             "status": discharge.status,
             "discharge_summary_url": discharge.discharge_summary_url,
             "patient_friendly_summary_url": discharge.patient_friendly_summary_url,
-            "insurance_ready_url": discharge.insurance_ready_url,
         }
 
     @staticmethod
@@ -294,5 +293,4 @@ class PatientProfileService:
             "status": discharge.status,
             "discharge_summary_url": discharge.discharge_summary_url,
             "patient_friendly_summary_url": discharge.patient_friendly_summary_url,
-            "insurance_ready_url": discharge.insurance_ready_url,
         }

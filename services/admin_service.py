@@ -191,3 +191,31 @@ class AdminService:
             "bills": bills,
             "medications": medications,
         }
+
+    @staticmethod
+    def get_discharge_pdfs(db: Session, discharge_id: int):
+        """Return all three PDF URLs for any discharge (admin use)."""
+        discharge = (
+            db.query(DischargeHistory)
+            .options(joinedload(DischargeHistory.patient))
+            .filter(
+                DischargeHistory.id == discharge_id,
+                DischargeHistory.status == "completed",
+            )
+            .first()
+        )
+        if not discharge:
+            return None
+        patient = discharge.patient
+        return {
+            "discharge_id": discharge.id,
+            "patient_id": patient.id if patient else None,
+            "patient_name": patient.full_name if patient else None,
+            "discharge_date": (
+                str(discharge.discharge_date) if discharge.discharge_date else None
+            ),
+            "status": discharge.status,
+            "discharge_summary_url": discharge.discharge_summary_url,
+            "patient_friendly_summary_url": discharge.patient_friendly_summary_url,
+            "insurance_ready_url": discharge.insurance_ready_url,
+        }

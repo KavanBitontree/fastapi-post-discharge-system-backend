@@ -187,6 +187,7 @@ async def convert_discharge_summary_pdf(
                 "summary": result.summary,
                 "key_points": result.key_points,
                 "medications": result.medications,
+                "precautions": result.precautions,
                 "follow_up_instructions": result.follow_up_instructions,
                 "warning_signs": result.warning_signs,
                 "processing_time_seconds": result.processing_time_seconds,

@@ -125,7 +125,6 @@ def get_discharge_pdfs(
     Returns:
     - **discharge_summary_url**: full hospital discharge summary PDF
     - **patient_friendly_summary_url**: simplified patient-friendly report PDF
-    - **insurance_ready_url**: insurance-ready report PDF
     """
     patient_id = _get_patient_id(current_user)
     result = PatientProfileService.get_discharge_pdfs(db, patient_id, discharge_id)

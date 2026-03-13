@@ -28,7 +28,7 @@ from zoneinfo import ZoneInfo
 
 router = APIRouter(prefix="/reminders", tags=["Reminders"])
 
-VALID_SLOTS = {flag for flag, _, _ in MEAL_SLOTS}
+VALID_SLOTS = {flag for flag, _, _, _ in MEAL_SLOTS}
 TIMEZONE    = ZoneInfo("Asia/Kolkata")
 
 

@@ -16,7 +16,7 @@ from core.config import settings
 from core.security import cookie_scheme 
 from core.config import settings  # noqa: F401 — also sets LangSmith os.environ vars
 import models  # noqa: F401 — registers all mappers (including TelegramSession) on startup
-from services.telegram.bot import start_polling, stop_polling
+from services.telegram.sender import set_webhook, set_my_commands
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,14 +43,24 @@ from routes.icd_routes import router as icd_router
 from routes.ird_routes import router as ird_router
 from routes.admin_routes import router as admin_analytics_router
 from routes.patient_routes import router as patient_router
+from routes.telegram_webhook import router as telegram_webhook_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle hook."""
-    start_polling()     # starts Telegram bot long-polling thread
+    # Register Telegram webhook (serverless-safe — no background threads)
+    set_my_commands()
+    backend = (settings.BACKEND_URL or "").strip()
+    if backend.startswith("https://"):
+        webhook_url = f"{backend.rstrip('/')}/telegram/webhook"
+        set_webhook(webhook_url, secret_token=settings.TELEGRAM_WEBHOOK_SECRET)
+    else:
+        logging.getLogger(__name__).info(
+            "BACKEND_URL not set or not HTTPS — skipping Telegram webhook registration "
+            "(expected for local dev)"
+        )
     yield
-    stop_polling()
 
 
 app = FastAPI(
@@ -90,6 +100,7 @@ app.include_router(icd_router)            # GET /icd/info  POST /icd/lookup
 app.include_router(ird_router)            # POST /api/discharge/{id}/generate-ird
 app.include_router(admin_analytics_router)  # GET /admin/dashboard, /admin/discharge-history, /admin/discharge/{id}/documents
 app.include_router(patient_router)          # GET /patient/profile, PATCH /patient/profile, GET /patient/dashboard, etc.
+app.include_router(telegram_webhook_router)   # POST /telegram/webhook
 
 
 @app.get("/")

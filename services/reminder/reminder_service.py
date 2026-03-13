@@ -19,6 +19,7 @@ Cron flow:
 
 from __future__ import annotations
 
+import html
 import logging
 from datetime import date, datetime, timedelta
 from typing import Optional
@@ -38,18 +39,18 @@ logger = logging.getLogger(__name__)
 
 TIMEZONE = ZoneInfo("Asia/Kolkata")
 
-# (schedule_column_flag, display_label, cron_hour)
-MEAL_SLOTS: list[tuple[str, str, int]] = [
-    ("before_breakfast", "Before Breakfast", 7),
-    ("after_breakfast",  "After Breakfast",  8),
-    ("before_lunch",     "Before Lunch",     11),
-    ("after_lunch",      "After Lunch",      12),
-    ("before_dinner",    "Before Dinner",    18),
-    ("after_dinner",     "After Dinner",     21),
+# (schedule_column_flag, display_label, cron_hour, cron_minute)
+MEAL_SLOTS: list[tuple[str, str, int, int]] = [
+    ("before_breakfast", "Before Breakfast", 7,  0),
+    ("after_breakfast",  "After Breakfast",  8,  0),
+    ("before_lunch",     "Before Lunch",     11, 0),
+    ("after_lunch",      "After Lunch",      13, 0),
+    ("before_dinner",    "Before Dinner",    18, 0),
+    ("after_dinner",     "After Dinner",     21, 0),
 ]
 
-SLOT_LABELS: dict[str, str] = {f: l for f, l, _ in MEAL_SLOTS}
-SLOT_ORDER:  list[str]      = [f for f, _, _ in MEAL_SLOTS]
+SLOT_LABELS: dict[str, str] = {f: l for f, l, _, _ in MEAL_SLOTS}
+SLOT_ORDER:  list[str]      = [f for f, _, _, _ in MEAL_SLOTS]
 
 FORM_EMOJI: dict[str, str] = {
     MedicineForm.TABLET:    "💊",
@@ -126,18 +127,18 @@ def _compute_next_notify_at(schedule: MedicationSchedule, after: datetime) -> Op
     tomorrow = today + timedelta(days=1)
 
     # Check remaining slots today
-    for flag, _, hour in MEAL_SLOTS:
+    for flag, _, hour, minute in MEAL_SLOTS:
         if not getattr(schedule, flag, False):
             continue
-        candidate = datetime(today.year, today.month, today.day, hour, 0, tzinfo=TIMEZONE)
+        candidate = datetime(today.year, today.month, today.day, hour, minute, tzinfo=TIMEZONE)
         if candidate > after:
             return candidate
 
     # Wrap to tomorrow — find first active slot
-    for flag, _, hour in MEAL_SLOTS:
+    for flag, _, hour, minute in MEAL_SLOTS:
         if not getattr(schedule, flag, False):
             continue
-        return datetime(tomorrow.year, tomorrow.month, tomorrow.day, hour, 0, tzinfo=TIMEZONE)
+        return datetime(tomorrow.year, tomorrow.month, tomorrow.day, hour, minute, tzinfo=TIMEZONE)
 
     # No slots set at all (e.g. Rosuvastatin with all false)
     return None
@@ -183,7 +184,7 @@ def build_telegram_message(
     count      = len(due_items)
 
     lines: list[str] = [
-        f"👋 Hello <b>{patient.full_name}</b>!",
+        f"👋 Hello <b>{html.escape(patient.full_name)}</b>!",
         f"🕐 It's <b>{time_str}</b> — time for your <b>{slot_label}</b> medicine{'s' if count > 1 else ''}.\n",
     ]
 
@@ -191,12 +192,12 @@ def build_telegram_message(
         med: Medication = item["medication"]
 
         emoji    = FORM_EMOJI.get(med.form_of_medicine, "💊") if med.form_of_medicine else "💊"
-        form_str = f" ({med.form_of_medicine.value.title()})" if med.form_of_medicine else ""
-        strength = f" {med.strength}" if med.strength else ""
+        form_str = f" ({html.escape(med.form_of_medicine.value.title())})" if med.form_of_medicine else ""
+        strength = f" {html.escape(med.strength)}" if med.strength else ""
         days_left = _days_remaining(med, today)
 
-        lines.append(f"{emoji} <b>{idx}. {med.drug_name}{strength}{form_str}</b>")
-        lines.append(f"   • Dose      : {med.dosage}")
+        lines.append(f"{emoji} <b>{idx}. {html.escape(med.drug_name)}{strength}{form_str}</b>")
+        lines.append(f"   • Dose      : {html.escape(str(med.dosage))}")
         if days_left is not None:
             lines.append(f"   • Days left : {days_left} day(s)")
         lines.append("")
@@ -297,7 +298,7 @@ def collect_due_medications(
         # Gate 3: is this slot active AND is it time to send?
         if not _is_due_now(sched, slot, now):
             # Log specifically if ALL flags are false (data issue like Rosuvastatin id=53)
-            if not any(getattr(sched, f, False) for f, _, _ in MEAL_SLOTS):
+            if not any(getattr(sched, f, False) for f, _, _, _ in MEAL_SLOTS):
                 logger.warning(
                     "med id=%s '%s' has ALL schedule flags=false — will never be reminded!",
                     med.id, med.drug_name
@@ -318,19 +319,30 @@ def update_schedule_after_send(
 ) -> None:
     """
     After a successful send:
-      latest_notified_at = sent_at
-      next_notify_at     = next slot time for THIS schedule's active flags
+      latest_notified_at = next_notify_at (the exact scheduled slot time),
+                           or sent_at on the very first notification (NULL case).
+      next_notify_at     = next slot time for THIS schedule's active flags.
+
+    Flow:
+      - First send : next_notify_at is NULL → latest_notified_at = sent_at (now)
+                     → next_notify_at set for the first time → all future sends
+                       skip the 6-slot scan and go straight to next_notify_at.
+      - All subsequent sends : latest_notified_at = the stored slot time
+                               (e.g. 13:00), not the actual cron fire time
+                               (e.g. 13:02), keeping the audit trail clean.
     """
+    # Capture scheduled slot time BEFORE computing the next one
+    notified_at = schedule.next_notify_at or sent_at
     next_dt = _compute_next_notify_at(schedule, sent_at)
 
-    schedule.latest_notified_at = sent_at
+    schedule.latest_notified_at = notified_at
     schedule.next_notify_at = next_dt
     db.commit()
 
     next_str = next_dt.isoformat() if next_dt else "None (no active slots!)"
     logger.info(
         "Schedule id=%s updated → latest_notified_at=%s | next_notify_at=%s",
-        schedule.id, sent_at.isoformat(), next_str,
+        schedule.id, notified_at.isoformat(), next_str,
     )
 
 
@@ -451,8 +463,8 @@ def run_all_due_reminders(db: Session, window_minutes: int = 20) -> dict:
         .all()
     )
 
-    # hour → schedule flag, e.g. 20 → "after_dinner"
-    hour_to_flag: dict[int, str] = {hour: flag for flag, _, hour in MEAL_SLOTS}
+    # (hour, minute) → schedule flag, e.g. (21, 0) → "after_dinner"
+    hour_to_flag: dict[tuple[int, int], str] = {(hour, minute): flag for flag, _, hour, minute in MEAL_SLOTS}
 
     sent_count = 0
     skip_count = 0
@@ -492,7 +504,26 @@ def run_all_due_reminders(db: Session, window_minutes: int = 20) -> dict:
                 continue
 
             sched = med.schedule
-            if not sched or sched.next_notify_at is None:
+            if not sched:
+                continue
+
+            if sched.next_notify_at is None:
+                # Never sent before — find if now falls within any active slot window.
+                matched_slot = None
+                for flag, _, s_hour, s_minute in MEAL_SLOTS:
+                    if not getattr(sched, flag, False):
+                        continue
+                    slot_time = datetime(now.year, now.month, now.day, s_hour, s_minute, tzinfo=TIMEZONE)
+                    if slot_time <= now <= slot_time + window:
+                        matched_slot = flag
+                        break
+                if matched_slot:
+                    due.append({"medication": med, "slot": matched_slot})
+                else:
+                    logger.debug(
+                        "med id=%s '%s' — next_notify_at is NULL and not within any active slot window at %s",
+                        med.id, med.drug_name, now.strftime("%H:%M"),
+                    )
                 continue
 
             nna = sched.next_notify_at
@@ -503,12 +534,12 @@ def run_all_due_reminders(db: Session, window_minutes: int = 20) -> dict:
             if not (nna <= now <= nna + window):
                 continue
 
-            # Map notify hour → slot flag
-            slot = hour_to_flag.get(nna.hour)
+            # Map notify (hour, minute) → slot flag
+            slot = hour_to_flag.get((nna.hour, nna.minute))
             if not slot:
                 logger.warning(
-                    "med id=%s: next_notify_at hour=%d doesn't match any slot",
-                    med.id, nna.hour,
+                    "med id=%s: next_notify_at %02d:%02d doesn't match any slot",
+                    med.id, nna.hour, nna.minute,
                 )
                 continue
 

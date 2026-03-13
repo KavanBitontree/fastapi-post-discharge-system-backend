@@ -1,7 +1,10 @@
 import json
+import logging
 from typing import Any, Dict, List, Optional, Set, Tuple
 import re
 from icd_rag_bot.rag.openrouter_client import chat_completion
+
+logger = logging.getLogger(__name__)
 
 
 SELECTOR_SYSTEM = """You are an ICD-10-CM coding assistant.
@@ -276,12 +279,22 @@ def select_codes(
             if not prob:
                 continue
             cands = candidates_by_problem.get(prob, [])
-            payload_candidates[prob] = to_candidate_rows(cands, limit=min(len(cands), 60))
+            payload_candidates[prob] = to_candidate_rows(cands, limit=min(len(cands), 20))
+
+        # Limit to top 12 problems by confidence to keep payload manageable
+        conf_order = {"high": 0, "medium": 1, "low": 2}
+        sorted_problems = sorted(
+            planned_problems,
+            key=lambda p: conf_order.get((p.get("confidence") or "low").lower(), 2),
+        )
+        top_problems = sorted_problems[:12]
+        top_prob_names = {(p.get("problem") or "").strip() for p in top_problems}
+        payload_candidates = {k: v for k, v in payload_candidates.items() if k in top_prob_names}
 
         user_payload = {
             "note": note,
             "max_codes_per_problem": max_codes_per_problem,
-            "planned_problems": planned_problems,
+            "planned_problems": top_problems,
             "candidates_by_problem": payload_candidates,
         }
     else:
@@ -294,19 +307,25 @@ def select_codes(
             "candidates": to_candidate_rows(top_candidates, limit=80),
         }
 
+    payload_json = json.dumps(user_payload, ensure_ascii=False)
+    logger.info("Selector: sending %d-char payload (%d problems) to %s",
+                len(payload_json), len(user_payload.get("planned_problems", [])), model)
+
     text = chat_completion(
         model=model,
         api_key=openrouter_api_key,
         messages=[
             {"role": "system", "content": SELECTOR_SYSTEM},
-            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+            {"role": "user", "content": payload_json},
         ],
         temperature=0.0,
-        max_tokens=2500,
+        max_tokens=4000,
     )
+    logger.info("Selector: raw LLM response (%d chars): %.500s", len(text), text)
 
     data = _safe_json_loads(text)
     results = data.get("results", [])
+    logger.info("Selector: parsed %d results from response", len(results) if isinstance(results, list) else 0)
     cleaned_results: List[Dict[str, Any]] = []
 
     for item in results if isinstance(results, list) else []:

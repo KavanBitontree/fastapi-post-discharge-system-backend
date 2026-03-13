@@ -7,6 +7,8 @@ class RegisterRequest(BaseModel):
     dob: date
     gender: str
     password: str
+    country_code: str
+    phone_number: str
 
 class RegisterResponse(BaseModel):
     id: int

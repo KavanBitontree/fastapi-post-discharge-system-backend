@@ -35,6 +35,7 @@ class CloudinaryStorage:
         "report": "medical_documents/reports",
         "bill": "medical_documents/bills",
         "prescription": "medical_documents/prescriptions",
+        "ird": "medical_documents/ird_documents",
     }
    
     @classmethod
