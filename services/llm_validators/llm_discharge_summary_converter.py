@@ -18,64 +18,102 @@ from schemas.patient_friendly_report_schemas import PatientFriendlyReportRespons
 
 _SYSTEM_PROMPT = """You are a medical communication expert who converts complex medical discharge summaries into patient-friendly language.
 
-Your goal: Create a clear, concise 1-page summary that patients can understand without medical training.
+Your goal: Create a clear, concise 1-page summary (300-400 words) that patients can understand without medical training.
 
-CRITICAL REQUIREMENTS - DO NOT OMIT:
-- INCLUDE ALL MEDICATIONS with dosage and timing (e.g., "Aspirin 75mg daily")
-- INCLUDE ALL LAB VALUES with simple explanations (e.g., "blood count improved from 6.2 to 9.4")
-- INCLUDE blood transfusions, IV treatments, and major procedures
-- INCLUDE dietary restrictions (low-sodium, DASH diet, NSAID avoidance)
-- INCLUDE specific follow-up timelines (not vague - e.g., "2 weeks" not "1-2 weeks")
-- INCLUDE test results that explain the diagnosis (hemoglobin, cholesterol, kidney function, etc.)
-- INCLUDE any special monitoring needed
+CRITICAL REQUIREMENTS - ACCURACY IS ESSENTIAL:
+
+BLOOD PRESSURE & VITAL SIGNS:
+- Use DISCHARGE BP (final BP at discharge), NOT admission BP
+- Example: If admission BP was 168/104 but discharge BP was 148/88, use 148/88 in key points
+- Always specify which BP reading you're using (discharge, current, etc.)
+
+MEDICATION EXTRACTION - MUST BE COMPLETE AND EXACT:
+- Extract EVERY medication from the discharge prescription list
+- For each medication, include: name, EXACT dose, EXACT timing (all times if multiple daily doses)
+- Example: "Losartan 50mg after lunch AND after dinner" (not just lunch)
+- Include ALL special instructions: "do not crush", "take with food", "every other day", etc.
+- Common medications to check for: Losartan, Spironolactone, Omega-3, Folic Acid, Deferoxamine, Aspirin, etc.
+- If a medication appears in discharge but not in your list, you missed it - go back and find it
+
+MEDICATION DESCRIPTIONS - CLINICAL ACCURACY:
+- Deferoxamine: "to prevent iron overload risk after blood transfusion" (not "to remove excess iron")
+- Spironolactone: Include "do not crush" instruction
+- Omega-3: Include exact dose (e.g., "1000mg daily")
+- Folic Acid: Include exact dose (e.g., "5mg daily")
+
+LAB VALUES & VITAL SIGNS:
+- Use DISCHARGE values, not admission values
+- Include exact numbers (e.g., "blood count improved from 6.2 to 9.4")
+- For key points, use discharge BP (e.g., 148/88), not admission BP
+
+FOLLOW-UP TIMELINES - MUST BE EXACT:
+- Use EXACT timelines from discharge (e.g., "2 weeks" not "4-6 weeks")
+- If discharge says "2 weeks for eGFR, K+, creatinine recheck", use "2 weeks"
+- Do not round or estimate timelines
+
+DIETARY RESTRICTIONS:
+- Use EXACT values from discharge (e.g., "< 2,300 mg sodium per day" not "< 2g")
+- Include all restrictions: low-sodium, DASH diet, NSAID avoidance, etc.
+
+PRECAUTIONS & WARNINGS - MUST BE COMPLETE:
+- Extract ALL precautions from discharge (avoid NSAIDs, avoid alcohol, avoid strenuous activity, etc.)
+- Include activity restrictions with specific details
+- Include medication interactions to avoid
+- Include symptoms that require immediate attention
+- Organize by urgency: critical warnings first, then important precautions
 
 GUIDELINES:
 - Use simple, everyday language (avoid medical jargon)
 - When medical terms are necessary, explain them in parentheses
 - Be empathetic and reassuring in tone
 - Focus on what matters to the patient: their condition, treatment, and next steps
-- Include specific numbers and values (e.g., "blood count improved from 6.2 to 9.4")
-- Keep the summary to approximately 500-700 words (1 page)
+- Keep the summary to approximately 300-400 words (fits on 1 page)
+- Use bullet points and short sentences for clarity
+- Organize information logically: condition → treatment → follow-up
+- DO NOT duplicate medication information between summary and medications list
 
 STRUCTURE YOUR RESPONSE AS JSON:
 {
-  "summary": "Main patient-friendly narrative (500-700 words) - MUST include all medications, lab values, procedures, and dietary instructions",
-  "key_points": ["3-5 most important takeaways - include specific test results"],
-  "medications": ["COMPLETE list of ALL medications with dosage and timing"],
-  "follow_up_instructions": "Specific timeline and actions - include dietary restrictions, activity level, monitoring instructions",
-  "warning_signs": ["When to seek immediate medical attention"]
+  "summary": "Main patient-friendly narrative (300-400 words) - Include condition, treatment received, DISCHARGE lab values, dietary restrictions, and follow-up timeline. DO NOT list medications here - they go in the medications list only.",
+  "key_points": ["2-3 most important takeaways - use DISCHARGE BP and lab values, not admission values"],
+  "medications": ["COMPLETE list of ALL medications from discharge prescription - include EXACT dosage, timing (all times if multiple daily), and special instructions. Examples: 'Losartan 50mg after lunch AND after dinner', 'Spironolactone 25mg every other day (do not crush)', 'Omega-3 1000mg daily', 'Folic Acid 5mg daily'"],
+  "precautions": ["COMPLETE list of ALL precautions and restrictions - include activity restrictions, medication interactions to avoid, dietary restrictions, and lifestyle changes. Examples: 'Avoid NSAIDs (pain relievers like ibuprofen)', 'No strenuous exercise for 4 weeks', 'Avoid alcohol with this medication', 'Do not take with dairy products'"],
+  "follow_up_instructions": "Specific timeline and actions - include EXACT dietary restrictions (e.g., '< 2,300 mg sodium per day'), activity level, monitoring instructions, and EXACT follow-up appointment timelines (e.g., 'eGFR, K+, creatinine recheck in 2 weeks')",
+  "warning_signs": ["When to seek immediate medical attention - max 5 items - include specific symptoms like chest pain, severe shortness of breath, etc."]
 }
 
 TONE: Warm, clear, and supportive. Write as if explaining to a family member.
 
-IMPORTANT: Do NOT omit any medications, lab values, or important medical details. Include everything."""
+CRITICAL: Accuracy over brevity. If you must choose between being concise and being accurate, choose accuracy. Every medication dose, timing, special instruction, vital sign, timeline, and precaution must match the discharge document exactly. Do not estimate or round values."""
 
 _CHUNK_SUMMARY_PROMPT = """Extract and simplify the key medical information from this section of a discharge summary.
 
 This is chunk {chunk_index} of {total_chunks}.
 
 CRITICAL: Extract ALL of the following if present:
-- ALL medications (with dosage and timing)
-- ALL lab values and test results (with numbers)
+- ALL medications with EXACT dosages and timings (e.g., "Losartan 50mg after lunch AND after dinner")
+- Special medication instructions (e.g., "do not crush", "every other day")
+- ALL lab values and test results with exact numbers
 - Blood transfusions or IV treatments
 - Procedures performed
-- Dietary restrictions
-- Follow-up appointments and timelines
+- Dietary restrictions with exact values (e.g., "< 2,300 mg sodium per day")
+- Follow-up appointments and EXACT timelines (e.g., "2 weeks" not "4-6 weeks")
 - Monitoring instructions
+- DISCHARGE vital signs (BP, HR, etc.) - not admission values
 
 Focus on:
 - Patient's condition and diagnosis
 - Treatments received
-- Medications (COMPLETE list)
+- ALL medications (COMPLETE list with exact dosages and timings)
 - Test results (in simple terms with specific numbers)
-- Follow-up care needed (specific timelines)
+- Follow-up care needed (EXACT timelines)
 - Warning signs
 - Dietary and lifestyle changes
 
 DISCHARGE SUMMARY SECTION:
 {text_chunk}
 
-Return simplified information in JSON format. DO NOT OMIT any medications, lab values, or important details."""
+Return simplified information in JSON format. DO NOT OMIT any medications, lab values, or important details. Be thorough and complete."""
 
 _FINAL_SYNTHESIS_PROMPT = """You have received simplified information from {num_chunks} sections of a discharge summary.
 
@@ -154,17 +192,34 @@ def _convert_single_pass(discharge_text: str) -> dict:
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": f"""Convert this discharge summary into a patient-friendly 1-page report.
 
-CRITICAL: Include ALL medications, ALL lab values, blood transfusions, dietary restrictions, and specific follow-up timelines.
+CRITICAL ACCURACY REQUIREMENTS:
+1. Use DISCHARGE BP and lab values (not admission values) - Example: If admission BP was 168/104 but discharge BP was 148/88, use 148/88
+2. Extract EVERY medication from the prescription list with EXACT dosage and timing
+   - Losartan: Include BOTH lunch AND dinner doses if prescribed
+   - Spironolactone: Include "do not crush" instruction
+   - Include Omega-3, Folic Acid, and any other medications listed
+3. Medication descriptions must be clinically accurate:
+   - Deferoxamine: "to prevent iron overload risk after blood transfusion" (not "to remove excess iron")
+4. Extract ALL precautions and restrictions:
+   - Activity restrictions (e.g., "no strenuous exercise for 4 weeks")
+   - Medication interactions to avoid (e.g., "avoid NSAIDs")
+   - Dietary restrictions (e.g., "< 2,300 mg sodium per day")
+   - Lifestyle changes (e.g., "avoid alcohol")
+5. Follow-up timelines must be EXACT (e.g., "2 weeks" not "4-6 weeks")
+6. DO NOT list medications in the summary narrative - put them ONLY in the medications list
+
+Keep the summary to 300-400 words maximum. Use short sentences and bullet points for clarity.
 
 {discharge_text}
 
 Return ONLY valid JSON (no markdown, no extra text) with these exact fields:
 {{
-  "summary": "Main patient-friendly narrative (500-700 words) - MUST include all medications, lab values, procedures, and dietary instructions",
-  "key_points": ["3-5 most important takeaways - include specific test results"],
-  "medications": ["COMPLETE list of ALL medications with dosage and timing"],
-  "follow_up_instructions": "Specific timeline and actions - include dietary restrictions, activity level, monitoring instructions",
-  "warning_signs": ["When to seek immediate medical attention"]
+  "summary": "Main patient-friendly narrative (300-400 words) - Include condition, treatment received, DISCHARGE lab values, dietary restrictions, and follow-up timeline. DO NOT list medications here.",
+  "key_points": ["2-3 most important takeaways - use DISCHARGE BP and lab values, not admission values"],
+  "medications": ["COMPLETE list of ALL medications from discharge prescription - include EXACT dosage, timing (all times if multiple daily), and special instructions. Examples: 'Losartan 50mg after lunch AND after dinner', 'Spironolactone 25mg every other day (do not crush)', 'Omega-3 1000mg daily', 'Folic Acid 5mg daily'"],
+  "precautions": ["COMPLETE list of ALL precautions and restrictions - include activity restrictions, medication interactions to avoid, dietary restrictions, and lifestyle changes. Examples: 'Avoid NSAIDs (pain relievers like ibuprofen)', 'No strenuous exercise for 4 weeks', 'Avoid alcohol with this medication', 'Do not take with dairy products'"],
+  "follow_up_instructions": "Specific timeline and actions - include EXACT dietary restrictions (e.g., '< 2,300 mg sodium per day'), activity level, monitoring instructions, and EXACT follow-up appointment timelines (e.g., 'eGFR, K+, creatinine recheck in 2 weeks')",
+  "warning_signs": ["When to seek immediate medical attention - max 5 items - include specific symptoms like chest pain, severe shortness of breath, etc."]
 }}"""}
     ]
     
@@ -257,17 +312,34 @@ def _convert_with_chunking(discharge_text: str, max_chars_per_chunk: int) -> dic
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": f"""Create a patient-friendly 1-page report from these simplified sections.
 
-CRITICAL: Include ALL medications, ALL lab values, blood transfusions, dietary restrictions, and specific follow-up timelines.
+CRITICAL ACCURACY REQUIREMENTS:
+1. Use DISCHARGE BP and lab values (not admission values) - Example: If admission BP was 168/104 but discharge BP was 148/88, use 148/88
+2. Extract EVERY medication from the prescription list with EXACT dosage and timing
+   - Losartan: Include BOTH lunch AND dinner doses if prescribed
+   - Spironolactone: Include "do not crush" instruction
+   - Include Omega-3, Folic Acid, and any other medications listed
+3. Medication descriptions must be clinically accurate:
+   - Deferoxamine: "to prevent iron overload risk after blood transfusion" (not "to remove excess iron")
+4. Extract ALL precautions and restrictions:
+   - Activity restrictions (e.g., "no strenuous exercise for 4 weeks")
+   - Medication interactions to avoid (e.g., "avoid NSAIDs")
+   - Dietary restrictions (e.g., "< 2,300 mg sodium per day")
+   - Lifestyle changes (e.g., "avoid alcohol")
+5. Follow-up timelines must be EXACT (e.g., "2 weeks" not "4-6 weeks")
+6. DO NOT list medications in the summary narrative - put them ONLY in the medications list
+
+Keep the summary to 300-400 words maximum. Use short sentences and bullet points for clarity.
 
 {combined_summaries}
 
 Return ONLY valid JSON (no markdown, no extra text) with these exact fields:
 {{
-  "summary": "Main patient-friendly narrative (500-700 words) - MUST include all medications, lab values, procedures, and dietary instructions",
-  "key_points": ["3-5 most important takeaways - include specific test results"],
-  "medications": ["COMPLETE list of ALL medications with dosage and timing"],
-  "follow_up_instructions": "Specific timeline and actions - include dietary restrictions, activity level, monitoring instructions",
-  "warning_signs": ["When to seek immediate medical attention"]
+  "summary": "Main patient-friendly narrative (300-400 words) - Include condition, treatment received, DISCHARGE lab values, dietary restrictions, and follow-up timeline. DO NOT list medications here.",
+  "key_points": ["2-3 most important takeaways - use DISCHARGE BP and lab values, not admission values"],
+  "medications": ["COMPLETE list of ALL medications from discharge prescription - include EXACT dosage, timing (all times if multiple daily), and special instructions. Examples: 'Losartan 50mg after lunch AND after dinner', 'Spironolactone 25mg every other day (do not crush)', 'Omega-3 1000mg daily', 'Folic Acid 5mg daily'"],
+  "precautions": ["COMPLETE list of ALL precautions and restrictions - include activity restrictions, medication interactions to avoid, dietary restrictions, and lifestyle changes. Examples: 'Avoid NSAIDs (pain relievers like ibuprofen)', 'No strenuous exercise for 4 weeks', 'Avoid alcohol with this medication', 'Do not take with dairy products'"],
+  "follow_up_instructions": "Specific timeline and actions - include EXACT dietary restrictions (e.g., '< 2,300 mg sodium per day'), activity level, monitoring instructions, and EXACT follow-up appointment timelines (e.g., 'eGFR, K+, creatinine recheck in 2 weeks')",
+  "warning_signs": ["When to seek immediate medical attention - max 5 items - include specific symptoms like chest pain, severe shortness of breath, etc."]
 }}"""}
     ]
     

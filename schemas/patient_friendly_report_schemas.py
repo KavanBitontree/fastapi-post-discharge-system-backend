@@ -37,6 +37,10 @@ class PatientFriendlyReportResponse(BaseModel):
         default_factory=list,
         description="Simplified medication list"
     )
+    precautions: list[str] = Field(
+        default_factory=list,
+        description="Important precautions and restrictions"
+    )
     follow_up_instructions: str = Field(
         default="",
         description="What patient needs to do next"

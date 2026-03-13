@@ -171,6 +171,7 @@ def _md_to_flowables(text, base_style, bullet_prefix='&#8226;', limit=None):
 def generate_patient_friendly_pdf(report_data: dict) -> BytesIO:
     """
     Generate an attractive, patient-friendly PDF from report data.
+    Optimized for 1.5-2 pages with compact, point-wise formatting.
     
     Parameters
     ----------
@@ -184,100 +185,112 @@ def generate_patient_friendly_pdf(report_data: dict) -> BytesIO:
         PDF file in memory (can be returned as response or saved)
     """
     
-    # Create PDF in memory
+    # Create PDF in memory with tighter margins for 1.5-2 page format
     pdf_buffer = BytesIO()
     doc = SimpleDocTemplate(
         pdf_buffer,
         pagesize=letter,
-        rightMargin=0.5*inch,
-        leftMargin=0.5*inch,
-        topMargin=0.5*inch,
-        bottomMargin=0.5*inch,
+        rightMargin=0.4*inch,
+        leftMargin=0.4*inch,
+        topMargin=0.4*inch,
+        bottomMargin=0.4*inch,
         title="Patient-Friendly Medical Report"
     )
     
     # Create styles
     styles = getSampleStyleSheet()
     
-    # Main title style - Large, centered, professional
+    # Main title style - Compact, centered, professional
     title_style = ParagraphStyle(
         'MainTitle',
         parent=styles['Heading1'],
-        fontSize=20,
+        fontSize=16,
         textColor=colors.HexColor('#0052CC'),
-        spaceAfter=3,
+        spaceAfter=1,
         alignment=TA_CENTER,
         fontName='Helvetica-Bold',
-        leading=22
+        leading=18
     )
     
-    # Subtitle style
+    # Subtitle style - Compact
     subtitle_style = ParagraphStyle(
         'Subtitle',
         parent=styles['Normal'],
-        fontSize=9,
+        fontSize=8,
         textColor=colors.HexColor('#666666'),
-        spaceAfter=8,
+        spaceAfter=4,
         alignment=TA_CENTER,
         fontName='Helvetica-Oblique'
     )
     
-    # Section heading style - Bold, colored
+    # Section heading style - Bold, colored, compact
     heading_style = ParagraphStyle(
         'SectionHeading',
         parent=styles['Heading2'],
-        fontSize=14,
+        fontSize=12,
         textColor=colors.HexColor('#FFFFFF'),
-        spaceAfter=10,
-        spaceBefore=12,
+        spaceAfter=6,
+        spaceBefore=6,
         fontName='Helvetica-Bold',
-        leading=16
+        leading=14
     )
     
-    # Body text style - Compact, readable
+    # Body text style - Very compact, readable
     body_style = ParagraphStyle(
         'BodyText',
         parent=styles['BodyText'],
-        fontSize=10,
+        fontSize=9,
         alignment=TA_LEFT,
-        spaceAfter=6,
-        leading=12,
+        spaceAfter=3,
+        leading=10,
         textColor=colors.HexColor('#333333')
     )
     
-    # Bullet point style - Compact
+    # Bullet point style - Very compact
     bullet_style = ParagraphStyle(
         'BulletStyle',
         parent=styles['BodyText'],
-        fontSize=10,
-        leftIndent=20,
-        spaceAfter=5,
-        leading=12,
+        fontSize=9,
+        leftIndent=15,
+        spaceAfter=2,
+        leading=10,
         textColor=colors.HexColor('#333333')
     )
     
-    # Medication style - Compact
+    # Medication style - Very compact
     med_style = ParagraphStyle(
         'MedicationStyle',
         parent=styles['BodyText'],
-        fontSize=9.5,
-        leftIndent=20,
-        spaceAfter=4,
-        leading=11,
+        fontSize=8.5,
+        leftIndent=15,
+        spaceAfter=2,
+        leading=9,
         textColor=colors.HexColor('#1a1a1a'),
         fontName='Helvetica'
     )
     
-    # Warning style - Red, bold, compact
+    # Precaution style - Orange/amber, bold, very compact
+    precaution_style = ParagraphStyle(
+        'PrecautionStyle',
+        parent=styles['BodyText'],
+        fontSize=8.5,
+        leftIndent=15,
+        spaceAfter=2,
+        textColor=colors.HexColor('#E65100'),
+        fontName='Helvetica-Bold',
+        leading=9
+    )
+    
+    # Warning style - Red, bold, very compact
     warning_style = ParagraphStyle(
         'WarningStyle',
         parent=styles['BodyText'],
-        fontSize=10,
-        leftIndent=20,
-        spaceAfter=5,
+        fontSize=9,
+        leftIndent=15,
+        spaceAfter=2,
         textColor=colors.HexColor('#D32F2F'),
         fontName='Helvetica-Bold',
-        leading=12
+        leading=10
     )
     
     # Build PDF content
@@ -285,136 +298,161 @@ def generate_patient_friendly_pdf(report_data: dict) -> BytesIO:
     
     # ===== HEADER SECTION =====
     story.append(Paragraph("PATIENT MEDICAL REPORT", title_style))
-    story.append(Spacer(1, 0.05*inch))
+    story.append(Spacer(1, 0.02*inch))
     
     # Date and info
     today = datetime.now().strftime("%B %d, %Y")
     story.append(Paragraph(f"Generated on {today}", subtitle_style))
-    story.append(Spacer(1, 0.12*inch))
+    story.append(Spacer(1, 0.06*inch))
     
     # ===== SUMMARY SECTION =====
     # Create colored header for summary
     summary_header_data = [['HOSPITAL STAY OVERVIEW']]
-    summary_header_table = Table(summary_header_data, colWidths=[7.0*inch])
+    summary_header_table = Table(summary_header_data, colWidths=[7.2*inch])
     summary_header_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#0052CC')),
         ('TEXTCOLOR', (0, 0), (-1, -1), colors.whitesmoke),
         ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
         ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 11),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-        ('TOPPADDING', (0, 0), (-1, -1), 6),
-        ('LEFTPADDING', (0, 0), (-1, -1), 10),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('LEFTPADDING', (0, 0), (-1, -1), 8),
     ]))
     story.append(summary_header_table)
-    story.append(Spacer(1, 0.08*inch))
+    story.append(Spacer(1, 0.04*inch))
     
     # Summary text - parse markdown and render with inline formatting preserved
+    # NOTE: Medications should ONLY appear in the MEDICATIONS section, not here
     summary_text = clean_text(report_data.get('summary', ''))
-    for para in _md_to_flowables(summary_text, bullet_style, bullet_prefix='&#8226;', limit=6):
+    for para in _md_to_flowables(summary_text, bullet_style, bullet_prefix='&#8226;', limit=5):
         story.append(para)
-    story.append(Spacer(1, 0.12*inch))
+    story.append(Spacer(1, 0.06*inch))
     
     # ===== KEY POINTS SECTION =====
     key_points_header_data = [['KEY POINTS']]
-    key_points_header_table = Table(key_points_header_data, colWidths=[7.0*inch])
+    key_points_header_table = Table(key_points_header_data, colWidths=[7.2*inch])
     key_points_header_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#1976D2')),
         ('TEXTCOLOR', (0, 0), (-1, -1), colors.whitesmoke),
         ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
         ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 11),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-        ('TOPPADDING', (0, 0), (-1, -1), 6),
-        ('LEFTPADDING', (0, 0), (-1, -1), 10),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('LEFTPADDING', (0, 0), (-1, -1), 8),
     ]))
     story.append(key_points_header_table)
-    story.append(Spacer(1, 0.06*inch))
+    story.append(Spacer(1, 0.03*inch))
     
-    for point in report_data.get('key_points', [])[:5]:  # Limit to 5 key points (was 3)
+    for point in report_data.get('key_points', [])[:4]:  # Limit to 4 key points
         rl_xml = _md_to_rl_xml(clean_text(point))
         if rl_xml:
-            story.append(Paragraph(f'&#8226; {rl_xml}', bullet_style))
-    story.append(Spacer(1, 0.12*inch))
+            story.append(Paragraph(f'• {rl_xml}', bullet_style))
+    story.append(Spacer(1, 0.06*inch))
     
     # ===== MEDICATIONS SECTION =====
     meds_header_data = [['MEDICATIONS']]
-    meds_header_table = Table(meds_header_data, colWidths=[7.0*inch])
+    meds_header_table = Table(meds_header_data, colWidths=[7.2*inch])
     meds_header_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#388E3C')),
         ('TEXTCOLOR', (0, 0), (-1, -1), colors.whitesmoke),
         ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
         ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 11),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-        ('TOPPADDING', (0, 0), (-1, -1), 6),
-        ('LEFTPADDING', (0, 0), (-1, -1), 10),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('LEFTPADDING', (0, 0), (-1, -1), 8),
     ]))
     story.append(meds_header_table)
-    story.append(Spacer(1, 0.06*inch))
+    story.append(Spacer(1, 0.03*inch))
     
-    for med in report_data.get('medications', [])[:8]:  # Limit to 8 medications (was 5)
+    for med in report_data.get('medications', [])[:6]:  # Limit to 6 medications
         rl_xml = _md_to_rl_xml(clean_text(med))
         if rl_xml:
             story.append(Paragraph(f'- {rl_xml}', med_style))
-    story.append(Spacer(1, 0.12*inch))
+    story.append(Spacer(1, 0.06*inch))
+    
+    # ===== PRECAUTIONS SECTION =====
+    precautions = report_data.get('precautions', [])
+    if precautions:
+        precautions_header_data = [['IMPORTANT PRECAUTIONS']]
+        precautions_header_table = Table(precautions_header_data, colWidths=[7.2*inch])
+        precautions_header_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#E65100')),
+            ('TEXTCOLOR', (0, 0), (-1, -1), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
+        ]))
+        story.append(precautions_header_table)
+        story.append(Spacer(1, 0.03*inch))
+        
+        for precaution in precautions[:8]:  # Limit to 8 precautions
+            rl_xml = _md_to_rl_xml(clean_text(precaution))
+            if rl_xml:
+                story.append(Paragraph(f'⚠ {rl_xml}', precaution_style))
+        story.append(Spacer(1, 0.06*inch))
     
     # ===== FOLLOW-UP INSTRUCTIONS SECTION =====
     followup_header_data = [['NEXT STEPS']]
-    followup_header_table = Table(followup_header_data, colWidths=[7.0*inch])
+    followup_header_table = Table(followup_header_data, colWidths=[7.2*inch])
     followup_header_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F57C00')),
         ('TEXTCOLOR', (0, 0), (-1, -1), colors.whitesmoke),
         ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
         ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 11),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-        ('TOPPADDING', (0, 0), (-1, -1), 6),
-        ('LEFTPADDING', (0, 0), (-1, -1), 10),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('LEFTPADDING', (0, 0), (-1, -1), 8),
     ]))
     story.append(followup_header_table)
-    story.append(Spacer(1, 0.06*inch))
+    story.append(Spacer(1, 0.03*inch))
     
     followup_text = clean_text(report_data.get('follow_up_instructions', ''))
-    for para in _md_to_flowables(followup_text, bullet_style, bullet_prefix='&#8226;', limit=5):
+    for para in _md_to_flowables(followup_text, bullet_style, bullet_prefix='&#8226;', limit=4):
         story.append(para)
-    story.append(Spacer(1, 0.12*inch))
+    story.append(Spacer(1, 0.06*inch))
     
     # ===== WARNING SIGNS SECTION =====
     warning_header_data = [['SEEK IMMEDIATE HELP IF']]
-    warning_header_table = Table(warning_header_data, colWidths=[7.0*inch])
+    warning_header_table = Table(warning_header_data, colWidths=[7.2*inch])
     warning_header_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#D32F2F')),
         ('TEXTCOLOR', (0, 0), (-1, -1), colors.whitesmoke),
         ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
         ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 11),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-        ('TOPPADDING', (0, 0), (-1, -1), 6),
-        ('LEFTPADDING', (0, 0), (-1, -1), 10),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('LEFTPADDING', (0, 0), (-1, -1), 8),
     ]))
     story.append(warning_header_table)
-    story.append(Spacer(1, 0.06*inch))
+    story.append(Spacer(1, 0.03*inch))
     
-    for sign in report_data.get('warning_signs', [])[:6]:  # Limit to 6 warning signs (was 4)
+    for sign in report_data.get('warning_signs', [])[:5]:  # Limit to 5 warning signs
         rl_xml = _md_to_rl_xml(clean_text(sign))
         if rl_xml:
             story.append(Paragraph(f'! {rl_xml}', warning_style))
     
-    story.append(Spacer(1, 0.15*inch))
+    story.append(Spacer(1, 0.08*inch))
     
     # ===== FOOTER =====
     footer_style = ParagraphStyle(
         'Footer',
         parent=styles['Normal'],
-        fontSize=8,
+        fontSize=7,
         textColor=colors.HexColor('#999999'),
         alignment=TA_CENTER,
-        spaceAfter=2
+        spaceAfter=1
     )
     
     story.append(Paragraph("_" * 70, footer_style))
-    story.append(Spacer(1, 0.05*inch))
+    story.append(Spacer(1, 0.02*inch))
     story.append(Paragraph(
         "This is a patient-friendly summary. Consult your healthcare provider for questions.",
         footer_style
