@@ -36,9 +36,4 @@ dependencies = [
   "bs4>=0.0.2",
   "markdown>=3.10.2",
   "tzdata>=2025.3",
-  "pytest>=9.0.2",
-  "easyocr>=1.7.2",
-  "paddleocr>=3.4.0",
-  "python-doctr>=1.0.1",
-  "rapidocr-onnxruntime>=1.4.4",
 ]
