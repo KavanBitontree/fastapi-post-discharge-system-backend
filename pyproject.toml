@@ -35,4 +35,5 @@ dependencies = [
   "reportlab>=4.4.10",
   "bs4>=0.0.2",
   "markdown>=3.10.2",
+  "tzdata>=2025.3",
 ]
