@@ -120,7 +120,7 @@ async def convert_discharge_summary_pdf(
         print(f"[pdf-converter] Redacting PII from discharge summary...")
         redacted_text, pii_metadata = redact_pii_from_text(
             extracted_text,
-            document_type="discharge_summary",
+            document_type="discharge_summary" ,
             filename=file.filename
         )
         
