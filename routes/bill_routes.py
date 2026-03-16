@@ -191,7 +191,7 @@ async def upload_and_process_bill(
                 "bill_id": bill.id,
                 "invoice_number": bill.invoice_number,
                 "discharge_id": bill.discharge_id,
-                "patient_email": patient.email,
+                "patient_id": patient.id,  # Use patient_id instead of email
                 "invoice_date": bill.invoice_date.isoformat() if bill.invoice_date else None,
                 "total_amount": str(bill.total_amount),
                 "line_items_count": len(parsed.line_items),

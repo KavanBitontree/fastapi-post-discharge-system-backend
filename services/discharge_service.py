@@ -373,13 +373,6 @@ def run_discharge_queue(
                 "Discharge %d — %s #%d FAILED: %s",
                 discharge.id, job.doc_type, job.index + 1, exc, exc_info=True,
             )
-            # Classify raw exceptions that weren't already wrapped
-            if not isinstance(exc, DischargeProcessingError):
-                exc = _classify(
-                    exc,
-                    f"{job.doc_type.capitalize()} #{job.index + 1} ('{job.filename}') "
-                    f"failed due to an unexpected error. Please check the file and retry.",
-                )
             discharge.status = "failed"
             discharge.error_type = exc.error_type  # type: ignore[attr-defined]
             discharge.error_code = exc.error_code  # type: ignore[attr-defined]
