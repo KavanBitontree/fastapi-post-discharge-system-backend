@@ -15,6 +15,7 @@ from schemas.patient_friendly_report_schemas import (
 from controllers.patient_friendly_report_controller import PatientFriendlyReportController
 from services.pdf_generator import generate_patient_friendly_pdf
 from services.storage.cloudinary_storage import upload_medical_pdf
+from services.pii_redaction import redact_pii_from_text
 from models.discharge_history import DischargeHistory
 import pdfplumber
 from io import BytesIO
@@ -112,6 +113,31 @@ async def convert_discharge_summary_pdf(
                 detail="PDF appears to be empty or contains very little text. "
                        "Please ensure the PDF contains a readable discharge summary."
             )
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # PII REDACTION - Remove sensitive information before sending to LLM
+        # ═══════════════════════════════════════════════════════════════════
+        print(f"[pdf-converter] Redacting PII from discharge summary...")
+        redacted_text, pii_metadata = redact_pii_from_text(
+            extracted_text,
+            document_type="discharge_summary" ,
+            filename=file.filename
+        )
+        
+        if pii_metadata["redaction_count"] > 0:
+            print(f"[pdf-converter] PII REDACTED: {pii_metadata['redaction_count']} items "
+                  f"(names: {len(pii_metadata['patient_names'])}, "
+                  f"ids: {len(pii_metadata['patient_ids'])}, "
+                  f"emails: {len(pii_metadata['patient_emails'])}, "
+                  f"addresses: {len(pii_metadata['patient_addresses'])}, "
+                  f"phones: {len(pii_metadata['patient_phones'])}, "
+                  f"passports: {len(pii_metadata.get('passports', []))})")
+        else:
+            print(f"[pdf-converter] No PII detected in discharge summary")
+        
+        # Use redacted text for LLM processing
+        extracted_text = redacted_text
+        # ═══════════════════════════════════════════════════════════════════
         
         # Create request object
         request_data = PatientFriendlyReportRequest(

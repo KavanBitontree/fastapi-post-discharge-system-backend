@@ -120,12 +120,6 @@ async def _read_jobs(
 
 
 def _result_to_error_detail(result: DischargeResult) -> dict:
-    _ERROR_TITLES = {
-        "no_data":     "Wrong or empty document",
-        "duplicate":   "Duplicate document",
-        "parse_error": "Document parsing failed",
-        "infra_error": "Temporary service error",
-    }
     return {
         "message": (
             "Processing stopped at a failed file. "
@@ -134,9 +128,6 @@ def _result_to_error_detail(result: DischargeResult) -> dict:
         ),
         "discharge_id": result.discharge_id,
         "status": result.status,
-        "error_type":  result.error_type,
-        "error_title": _ERROR_TITLES.get(result.error_type or "", "Processing error"),
-        "error":       result.error,
         "progress": {
             "processed_reports":       result.processed_reports,
             "processed_bills":         result.processed_bills,
@@ -146,6 +137,7 @@ def _result_to_error_detail(result: DischargeResult) -> dict:
             "type":  result.failed_at_type,
             "index": result.failed_at_index,
         },
+        "error": result.error,
     }
 
 
@@ -303,15 +295,7 @@ def get_discharge_status(discharge_id: int, db: Session = Depends(get_db)):
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Discharge id={discharge_id} not found.",
         )
-
-    _ERROR_TITLES = {
-        "no_data":     "Wrong or empty document",
-        "duplicate":   "Duplicate document",
-        "parse_error": "Document parsing failed",
-        "infra_error": "Temporary service error",
-    }
-
-    resp: dict = {
+    return {
         "discharge_id":   discharge.id,
         "patient_id":     discharge.patient_id,
         "discharge_date": discharge.discharge_date,
