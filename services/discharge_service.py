@@ -380,10 +380,15 @@ def run_discharge_queue(
                     f"{job.doc_type.capitalize()} #{job.index + 1} ('{job.filename}') "
                     f"failed due to an unexpected error. Please check the file and retry.",
                 )
+
+            error_type = getattr(exc, "error_type", "parse_error")
+            error_code = getattr(exc, "error_code", "PROCESSING_ERROR")
+            error_message = str(exc)
+
             discharge.status = "failed"
-            discharge.error_type = exc.error_type  # type: ignore[attr-defined]
-            discharge.error_code = exc.error_code  # type: ignore[attr-defined]
-            discharge.failure_reason = str(exc)
+            discharge.error_type = error_type
+            discharge.error_code = error_code
+            discharge.failure_reason = error_message
             db.commit()
 
             return DischargeResult(
@@ -394,9 +399,9 @@ def run_discharge_queue(
                 processed_prescriptions=discharge.processed_prescriptions,
                 failed_at_type=job.doc_type,
                 failed_at_index=job.index,
-                error=str(exc),
-                error_type=exc.error_type,  # type: ignore[attr-defined]
-                error_code=exc.error_code,  # type: ignore[attr-defined]
+                error=error_message,
+                error_type=error_type,
+                error_code=error_code,
             )
 
     # ── All jobs completed ────────────────────────────────────────────────────
@@ -435,6 +440,7 @@ def run_discharge_queue_in_background(discharge_id: int, all_jobs: list[FileJob]
     from core.database import SessionLocal
 
     db = SessionLocal()
+    discharge = None
     try:
         discharge = db.query(DischargeHistory).filter(DischargeHistory.id == discharge_id).first()
         if not discharge:
@@ -446,5 +452,20 @@ def run_discharge_queue_in_background(discharge_id: int, all_jobs: list[FileJob]
             "Background task uncaught error for discharge %d: %s",
             discharge_id, exc, exc_info=True,
         )
+        # Ensure frontend does not stay in processing if an uncaught error bubbles up.
+        try:
+            target = discharge or db.query(DischargeHistory).filter(DischargeHistory.id == discharge_id).first()
+            if target:
+                target.status = "failed"
+                if not target.error_type:
+                    target.error_type = "infra_error"
+                if not target.error_code:
+                    target.error_code = "PROCESSING_ERROR"
+                if not target.failure_reason:
+                    target.failure_reason = str(exc)
+                db.commit()
+        except Exception:
+            db.rollback()
+            logger.error("Failed to persist background failure state for discharge %d", discharge_id, exc_info=True)
     finally:
         db.close()
