@@ -24,8 +24,9 @@ class PIIRedactor:
     """Detects and redacts specific PII fields from text."""
     
     # Pattern for Patient Name (handles multiple formats)
-    # Matches: "Patient Name:", "Name :", "Name:"
+    # Matches: "Patient Name:", "Name :" (in patient section only)
     # Stops at field boundaries like "Report", "Account", "Date of Birth", "Passport", "DOB", "MRN", or newline
+    # Does NOT match doctor names (preceded by "Dr.", "MD", "FACP", etc.)
     PATIENT_NAME_PATTERN = r'(?:Patient\s+)?Name\s*:\s*([^\n]+?)(?=\s+(?:Report|Account|Date\s+of\s+Birth|Passport|DOB|MRN|Branch|LabNo|Collected|Received|Reported|PageNo|Consultant)|\n|$)'
     
     # Pattern for Patient ID (handles multiple formats)
@@ -72,13 +73,23 @@ class PIIRedactor:
     
     
     def detect_patient_name(self, text: str) -> List[str]:
-        """Detect patient name in text - captures only the name value."""
+        """Detect patient name in text - captures only the name value, excludes doctor names."""
         names = []
         matches = re.findall(self.PATIENT_NAME_PATTERN, text, re.IGNORECASE)
         for match in matches:
             name = match.strip()
+            
+            # Skip if already redacted
             if name and not name.startswith('['):
-                names.append(name)
+                # Filter out doctor names (contain "Dr.", "MD", "FACP", "FACC", etc.)
+                # Also filter out names with underscores (formatting artifacts)
+                doctor_indicators = ['dr.', 'md,', 'facp', 'facc', 'md facp', 'md facc', 'phd', 'dds', 'dvm']
+                is_doctor_name = any(indicator in name.lower() for indicator in doctor_indicators)
+                has_underscores = '_' in name
+                
+                if not is_doctor_name and not has_underscores:
+                    names.append(name)
+        
         return list(set(names))
     
     def detect_patient_id(self, text: str) -> List[str]:
