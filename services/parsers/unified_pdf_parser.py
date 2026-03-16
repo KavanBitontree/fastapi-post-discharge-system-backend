@@ -12,12 +12,93 @@ from pathlib import Path
 from typing import Callable, TypeVar, Union, BinaryIO
 import pdfplumber
 from io import BytesIO
+import httpx
 
 from core.chunking import calculate_chunking_strategy, get_model_config
+from core.config import settings
 from services.utils.pdf_detector import PDFTypeDetector
 
 # Type variable for generic return types
 T = TypeVar('T')
+
+LOCAL_OCR_EXTRACT_URL = "http://127.0.0.1:8005/ocr/extract"
+
+
+def _is_development_env() -> bool:
+    return (settings.ENV or "").strip().lower() == "development"
+
+
+def _extract_pages_via_local_ocr(file_bytes: bytes, filename: str) -> list[str]:
+    """
+    Call local OCR microservice and return cleaned text per page.
+
+    The OCR service is expected to remove confidential details before returning text.
+    """
+    with httpx.Client(timeout=300.0) as client:
+        response = client.post(
+            LOCAL_OCR_EXTRACT_URL,
+            files={"file": (filename, file_bytes, "application/pdf")},
+        )
+
+    response.raise_for_status()
+    payload = response.json()
+
+    pages_map = payload.get("extracted", {}).get("pages", {})
+    if not pages_map:
+        return []
+
+    # Keep deterministic page order: page_1, page_2, ...
+    ordered_items = sorted(
+        pages_map.items(),
+        key=lambda item: int(item[0].split("_")[-1]) if item[0].startswith("page_") else 10**9,
+    )
+    return [text or "" for _, text in ordered_items]
+
+
+def _process_scanned_with_local_ocr(
+    file_bytes: bytes,
+    filename: str,
+    extraction_function: Callable,
+    merge_function: Callable,
+) -> T:
+    """Extract scanned content via local OCR, then reuse standard chunk+merge flow."""
+    pages = _extract_pages_via_local_ocr(file_bytes, filename)
+    if not pages:
+        raise ValueError("Local OCR returned no extracted pages")
+
+    total_pages = len(pages)
+    avg_chars_per_page = int(sum(len(p) for p in pages) / total_pages) if total_pages else 0
+    chunk_strategy = calculate_chunking_strategy(
+        total_pages=total_pages,
+        avg_chars_per_page=avg_chars_per_page,
+        model_name="openai/gpt-oss-120b",
+    )
+
+    pages_per_chunk = chunk_strategy.pages_per_chunk
+    total_chunks = chunk_strategy.estimated_total_chunks
+
+    print(f"[unified-parser] Local OCR extracted {total_pages} page(s)")
+    print(
+        f"[unified-parser] Strategy: {pages_per_chunk} pages/chunk, "
+        f"{total_chunks} chunks, ~${chunk_strategy.estimated_cost:.4f}"
+    )
+
+    if total_chunks == 1:
+        chunk_text = "\n\n".join(pages)
+        return extraction_function(chunk_text, 0, 1)
+
+    results = []
+    for i in range(total_chunks):
+        start = i * pages_per_chunk
+        end = min(start + pages_per_chunk, total_pages)
+        chunk_text = "\n\n".join(pages[start:end])
+
+        print(f"[unified-parser] Processing OCR chunk {i+1}/{total_chunks} (pages {start+1}-{end})")
+        result = extraction_function(chunk_text, i, total_chunks)
+        results.append(result)
+
+    print("[unified-parser] Merging OCR chunk results...")
+    return merge_function(results)
 
 
 def analyze_pdf_for_chunking(pdf_path: str) -> dict:
@@ -138,6 +219,16 @@ def extract_with_chunking(
     print(f"[unified-parser] Using {actual_strategy} extraction")
     
     if actual_strategy == "vision":
+        if _is_development_env():
+            with open(pdf_path, "rb") as f:
+                file_bytes = f.read()
+            return _process_scanned_with_local_ocr(
+                file_bytes=file_bytes,
+                filename=Path(pdf_path).name,
+                extraction_function=extraction_function,
+                merge_function=merge_function,
+            )
+
         # Route to vision parser
         # Import here to avoid circular dependency
         from services.parsers.vision_parser import (
@@ -275,6 +366,17 @@ def extract_with_chunking_from_memory(
     print(f"[unified-parser] Using {actual_strategy} extraction")
     
     if actual_strategy == "vision":
+        if _is_development_env():
+            pdf_buffer.seek(0)
+            file_bytes = pdf_buffer.read()
+            pdf_buffer.seek(0)
+            return _process_scanned_with_local_ocr(
+                file_bytes=file_bytes,
+                filename=filename,
+                extraction_function=extraction_function,
+                merge_function=merge_function,
+            )
+
         # Route to vision parser (memory-based)
         from services.parsers.vision_parser import (
             parse_report_vision_from_memory,
