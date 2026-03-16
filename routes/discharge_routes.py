@@ -119,6 +119,12 @@ async def _read_jobs(
 
 
 def _result_to_error_detail(result: DischargeResult) -> dict:
+    _ERROR_TITLES = {
+        "no_data":     "Wrong or empty document",
+        "duplicate":   "Duplicate document",
+        "parse_error": "Document parsing failed",
+        "infra_error": "Temporary service error",
+    }
     return {
         "message": (
             "Processing stopped at a failed file. "
@@ -127,6 +133,9 @@ def _result_to_error_detail(result: DischargeResult) -> dict:
         ),
         "discharge_id": result.discharge_id,
         "status": result.status,
+        "error_type":  result.error_type,
+        "error_title": _ERROR_TITLES.get(result.error_type or "", "Processing error"),
+        "error":       result.error,
         "progress": {
             "processed_reports":       result.processed_reports,
             "processed_bills":         result.processed_bills,
@@ -136,7 +145,6 @@ def _result_to_error_detail(result: DischargeResult) -> dict:
             "type":  result.failed_at_type,
             "index": result.failed_at_index,
         },
-        "error": result.error,
     }
 
 
@@ -279,14 +287,29 @@ async def retry_discharge(
 
 @router.get("/{discharge_id}/status")
 def get_discharge_status(discharge_id: int, db: Session = Depends(get_db)):
-    """Poll the processing progress of a discharge record."""
+    """
+    Poll the processing progress of a discharge record.
+    
+    Returns structured error response when status="failed" with:
+    - error_code: Unique machine-readable identifier (e.g., BILL_DUPLICATE_INVOICE)
+    - error_type: Legacy type for backward compatibility (no_data|duplicate|parse_error|infra_error)
+    - reason: User-friendly message for the admin
+    """
     discharge = db.query(DischargeHistory).filter(DischargeHistory.id == discharge_id).first()
     if not discharge:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Discharge id={discharge_id} not found.",
         )
-    return {
+
+    _ERROR_TITLES = {
+        "no_data":     "Wrong or empty document",
+        "duplicate":   "Duplicate document",
+        "parse_error": "Document parsing failed",
+        "infra_error": "Temporary service error",
+    }
+
+    resp: dict = {
         "discharge_id":   discharge.id,
         "patient_id":     discharge.patient_id,
         "discharge_date": discharge.discharge_date,
@@ -297,6 +320,16 @@ def get_discharge_status(discharge_id: int, db: Session = Depends(get_db)):
             "prescriptions": discharge.processed_prescriptions,
         },
     }
+
+    if discharge.status == "failed" and discharge.failure_reason:
+        resp["failure"] = {
+            "error_code":  discharge.error_code,
+            "error_type":  discharge.error_type,
+            "error_title": _ERROR_TITLES.get(discharge.error_type or "", "Processing error"),
+            "reason":      discharge.failure_reason,
+        }
+
+    return resp
 
 
 # ── GET /api/discharge/{discharge_id}/pdfs ────────────────────────────────────
