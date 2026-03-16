@@ -243,7 +243,6 @@ def _process_prescription(db: Session, discharge: DischargeHistory, job: FileJob
 
     label = f"Prescription #{job.index + 1} ('{job.filename}')"
     try:
-        url = _upload_to_cloudinary(job.content, job.filename, "prescription", discharge.patient_id)
         parsed = parse_prescription_pdf_from_memory(BytesIO(job.content), job.filename, strategy=job.strategy)
     except DischargeProcessingError:
         raise
