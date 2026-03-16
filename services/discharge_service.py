@@ -15,10 +15,10 @@ Only when ALL jobs succeed is the discharge record marked `completed`.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from io import BytesIO
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from sqlalchemy.orm import Session
 
@@ -33,22 +33,35 @@ class DischargeProcessingError(Exception):
     """
     Raised by file processors when a document cannot be stored.
 
-    error_type values:
-      no_data     — PDF doesn't contain the expected data (wrong file type)
-      duplicate   — record already exists (invoice number / report conflict)
-      parse_error — LLM/parser produced an unexpected or empty result
-      infra_error — external service failure (Cloudinary, HF, DB, etc.)
+    Attributes:
+        message: User-friendly error message
+        error_type: Legacy error type (no_data|duplicate|parse_error|infra_error)
+        error_code: Structured error code (e.g., BILL_DUPLICATE_INVOICE)
+        context: Additional error context for frontend/logging
     """
-    def __init__(self, message: str, error_type: str = "parse_error"):
+    def __init__(
+        self,
+        message: str,
+        error_type: str = "parse_error",
+        error_code: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ):
         super().__init__(message)
         self.error_type = error_type
+        self.error_code = error_code
+        self.context = context or {}
 
 
 # ── Classifier: map raw exceptions to DischargeProcessingError ────────────────
 
 _INFRA_KEYWORDS = ("504", "503", "502", "timeout", "connection", "cloudinary", "huggingface")
 
-def _classify(exc: Exception, fallback_message: str) -> DischargeProcessingError:
+def _classify(
+    exc: Exception,
+    fallback_message: str,
+    error_code: Optional[str] = None,
+    context: Optional[Dict[str, Any]] = None,
+) -> DischargeProcessingError:
     """Wrap an unexpected exception with a user-friendly message and error_type."""
     if isinstance(exc, DischargeProcessingError):
         return exc
@@ -58,8 +71,15 @@ def _classify(exc: Exception, fallback_message: str) -> DischargeProcessingError
             f"A temporary service error occurred while processing the file. "
             f"Please retry in a moment. (Detail: {exc})",
             error_type="infra_error",
+            error_code=error_code or "SERVICE_UNAVAILABLE",
+            context=context,
         )
-    return DischargeProcessingError(fallback_message, error_type="parse_error")
+    return DischargeProcessingError(
+        fallback_message,
+        error_type="parse_error",
+        error_code=error_code or "PROCESSING_ERROR",
+        context=context,
+    )
 
 
 # ── Job descriptor ─────────────────────────────────────────────────────────────
@@ -86,6 +106,7 @@ class DischargeResult:
     failed_at_index: Optional[int] = None
     error: Optional[str] = None
     error_type: Optional[str] = None   # no_data | duplicate | parse_error | infra_error
+    error_code: Optional[str] = None   # Structured error code (e.g., BILL_DUPLICATE_INVOICE)
 
 
 # ── Per-type processors (sync — run inside a thread-pool endpoint) ─────────────
@@ -118,6 +139,12 @@ def _process_report(db: Session, discharge: DischargeHistory, job: FileJob) -> N
             exc,
             f"{label}: an unexpected error occurred during parsing. "
             f"Ensure the file is a valid, readable PDF.",
+            error_code="REPORT_PARSE_ERROR",
+            context={
+                "document_type": "report",
+                "filename": job.filename,
+                "discharge_id": discharge.id,
+            },
         ) from exc
 
     if not validated.header.report_name or not validated.test_results:
@@ -126,6 +153,12 @@ def _process_report(db: Session, discharge: DischargeHistory, job: FileJob) -> N
             f"no report name or test results could be extracted. "
             f"Please upload a valid report PDF.",
             error_type="no_data",
+            error_code="REPORT_NO_DATA",
+            context={
+                "document_type": "report",
+                "filename": job.filename,
+                "discharge_id": discharge.id,
+            },
         )
 
     report_date = parse_date(validated.header.report_date)
@@ -134,6 +167,13 @@ def _process_report(db: Session, discharge: DischargeHistory, job: FileJob) -> N
             f"A report named '{validated.header.report_name}' already exists for this discharge. "
             f"Remove the duplicate file and retry.",
             error_type="duplicate",
+            error_code="REPORT_DUPLICATE",
+            context={
+                "document_type": "report",
+                "filename": job.filename,
+                "discharge_id": discharge.id,
+                "report_name": validated.header.report_name,
+            },
         )
 
     store_report(db, validated, discharge_id=discharge.id, report_url=url)
@@ -154,6 +194,12 @@ def _process_bill(db: Session, discharge: DischargeHistory, job: FileJob) -> Non
             exc,
             f"{label}: an unexpected error occurred during parsing. "
             f"Ensure the file is a valid, readable PDF.",
+            error_code="BILL_PARSE_ERROR",
+            context={
+                "document_type": "bill",
+                "filename": job.filename,
+                "discharge_id": discharge.id,
+            },
         ) from exc
 
     if not parsed.bill.invoice_number or not parsed.bill.total_amount or not parsed.line_items:
@@ -162,6 +208,12 @@ def _process_bill(db: Session, discharge: DischargeHistory, job: FileJob) -> Non
             f"no invoice number, total amount, or line items could be extracted. "
             f"Please upload a valid hospital bill PDF.",
             error_type="no_data",
+            error_code="BILL_PARSE_ERROR",
+            context={
+                "document_type": "bill",
+                "filename": job.filename,
+                "discharge_id": discharge.id,
+            },
         )
 
     try:
@@ -172,6 +224,13 @@ def _process_bill(db: Session, discharge: DischargeHistory, job: FileJob) -> Non
             f"{label}: invoice number '{parsed.bill.invoice_number}' already exists in the system. "
             f"This bill has already been uploaded. Remove the duplicate and retry.",
             error_type="duplicate",
+            error_code="BILL_DUPLICATE_INVOICE",
+            context={
+                "document_type": "bill",
+                "filename": job.filename,
+                "discharge_id": discharge.id,
+                "invoice_number": parsed.bill.invoice_number,
+            },
         ) from exc
 
 
@@ -193,6 +252,12 @@ def _process_prescription(db: Session, discharge: DischargeHistory, job: FileJob
             exc,
             f"{label}: an unexpected error occurred during parsing. "
             f"Ensure the file is a valid, readable PDF.",
+            error_code="PRESCRIPTION_PARSE_ERROR",
+            context={
+                "document_type": "prescription",
+                "filename": job.filename,
+                "discharge_id": discharge.id,
+            },
         ) from exc
 
     if not parsed.medications:
@@ -201,6 +266,12 @@ def _process_prescription(db: Session, discharge: DischargeHistory, job: FileJob
             f"no drug names could be extracted. "
             f"Please upload a valid prescription PDF.",
             error_type="no_data",
+            error_code="PRESCRIPTION_NO_MEDICATIONS",
+            context={
+                "document_type": "prescription",
+                "filename": job.filename,
+                "discharge_id": discharge.id,
+            },
         )
 
     # Normalise to ParsedPrescription if the parser returned a ValidatedPrescription
@@ -312,6 +383,7 @@ def run_discharge_queue(
                 )
             discharge.status = "failed"
             discharge.error_type = exc.error_type  # type: ignore[attr-defined]
+            discharge.error_code = exc.error_code  # type: ignore[attr-defined]
             discharge.failure_reason = str(exc)
             db.commit()
 
@@ -325,6 +397,7 @@ def run_discharge_queue(
                 failed_at_index=job.index,
                 error=str(exc),
                 error_type=exc.error_type,  # type: ignore[attr-defined]
+                error_code=exc.error_code,  # type: ignore[attr-defined]
             )
 
     # ── All jobs completed ────────────────────────────────────────────────────
