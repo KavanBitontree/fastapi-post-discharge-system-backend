@@ -34,6 +34,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPExcepti
 from sqlalchemy.orm import Session
 
 from core.database import get_db
+from core.security import require_admin
 from models.discharge_history import DischargeHistory
 from models.patient import Patient
 from services.discharge_service import DischargeResult, FileJob, run_discharge_queue, run_discharge_queue_in_background
@@ -158,6 +159,7 @@ async def process_discharge(
     Returns 202 Accepted immediately with the discharge_id so the frontend
     can start polling GET /api/discharge/{id}/status for live progress.
     The queue processes: reports → bills → prescriptions (in order).
+    Prescription PDFs are processed in-memory and not stored in Cloudinary.
     Each file is committed individually — if one fails, previous ones are kept.
     """
     # ── Validate inputs ───────────────────────────────────────────────────────
@@ -279,7 +281,14 @@ async def retry_discharge(
 
 @router.get("/{discharge_id}/status")
 def get_discharge_status(discharge_id: int, db: Session = Depends(get_db)):
-    """Poll the processing progress of a discharge record."""
+    """
+    Poll the processing progress of a discharge record.
+    
+    Returns structured error response when status="failed" with:
+    - error_code: Unique machine-readable identifier (e.g., BILL_DUPLICATE_INVOICE)
+    - error_type: Legacy type for backward compatibility (no_data|duplicate|parse_error|infra_error)
+    - reason: User-friendly message for the admin
+    """
     discharge = db.query(DischargeHistory).filter(DischargeHistory.id == discharge_id).first()
     if not discharge:
         raise HTTPException(
@@ -297,6 +306,16 @@ def get_discharge_status(discharge_id: int, db: Session = Depends(get_db)):
             "prescriptions": discharge.processed_prescriptions,
         },
     }
+
+    if discharge.status == "failed" and discharge.failure_reason:
+        resp["failure"] = {
+            "error_code":  discharge.error_code,
+            "error_type":  discharge.error_type,
+            "error_title": _ERROR_TITLES.get(discharge.error_type or "", "Processing error"),
+            "reason":      discharge.failure_reason,
+        }
+
+    return resp
 
 
 # ── GET /api/discharge/{discharge_id}/pdfs ────────────────────────────────────
@@ -331,3 +350,33 @@ def get_patient_latest_discharge_pdfs(patient_id: int, db: Session = Depends(get
     Returns 404 if no discharge record is found for the patient or no PDFs exist yet.
     """
     return DischargePdfController.get_pdfs_by_patient(db, patient_id)
+
+
+# ── DELETE /api/discharge/{discharge_id} (admin only) ───────────────────────
+
+@router.delete("/{discharge_id}")
+def delete_discharge_history(
+    discharge_id: int,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(require_admin),
+):
+    """
+    Permanently delete a discharge history record and all related rows.
+
+    Cascade cleanup is handled by configured ORM/DB relationships.
+    This route is restricted to admin users only.
+    """
+    discharge = db.query(DischargeHistory).filter(DischargeHistory.id == discharge_id).first()
+    if not discharge:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Discharge id={discharge_id} not found.",
+        )
+
+    db.delete(discharge)
+    db.commit()
+
+    return {
+        "discharge_id": discharge_id,
+        "message": "Discharge history deleted successfully.",
+    }

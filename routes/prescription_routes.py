@@ -7,9 +7,8 @@ API endpoints for uploading and processing prescription PDFs.
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from pathlib import Path
-from typing import Optional
-import shutil
 from datetime import datetime
+from io import BytesIO
 
 from core.database import get_db
 from models.discharge_history import DischargeHistory
@@ -29,7 +28,7 @@ async def upload_and_process_prescription(
     Upload a prescription PDF and process it.
     
     **Workflow:**
-    1. Upload PDF to Cloudinary
+    1. Read PDF in memory
     2. Extract with LLM (auto-detects text vs scanned)
     3. Look up patient by ID
     4. Find or create doctor
@@ -56,15 +55,12 @@ async def upload_and_process_prescription(
             detail="Only PDF files are accepted"
         )
     
-    cloudinary_public_id: Optional[str] = None
-    
     try:
         # ═══════════════════════════════════════════════════════════════════
         # STEP 1: Read PDF into memory
         # ═══════════════════════════════════════════════════════════════════
         # Read the entire file into memory
         pdf_content = await file.read()
-        file.file.seek(0)  # Reset file pointer for Cloudinary upload
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_filename = f"{timestamp}_{Path(file.filename).name}"
@@ -72,34 +68,7 @@ async def upload_and_process_prescription(
         print(f"[prescription] Read PDF into memory: {safe_filename} ({len(pdf_content)} bytes)")
 
         # ═══════════════════════════════════════════════════════════════════
-        # STEP 2: Upload to Cloudinary
-        # ═══════════════════════════════════════════════════════════════════
-        from services.storage.cloudinary_storage import upload_medical_pdf
-        from io import BytesIO
-        
-        try:
-            # Create BytesIO from content for Cloudinary
-            pdf_buffer = BytesIO(pdf_content)
-            cloudinary_result = upload_medical_pdf(
-                file=pdf_buffer,
-                filename=safe_filename,
-                document_type="prescription",
-                patient_id=db.query(DischargeHistory).filter(DischargeHistory.id == discharge_id).first().patient_id
-            )
-            
-            cloudinary_url = cloudinary_result["secure_url"]
-            cloudinary_public_id = cloudinary_result["public_id"]
-            
-            print(f"[prescription] Uploaded to Cloudinary: {cloudinary_public_id}")
-        except Exception as cloud_err:
-            print(f"[prescription] Cloudinary upload failed: {cloud_err}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to upload PDF to cloud storage: {str(cloud_err)}"
-            )
-
-        # ═══════════════════════════════════════════════════════════════════
-        # STEP 3: Extract with LLM
+        # STEP 2: Extract with LLM
         # ═══════════════════════════════════════════════════════════════════
         try:
             # Create another BytesIO for extraction
@@ -117,7 +86,7 @@ async def upload_and_process_prescription(
             )
         
         # ═══════════════════════════════════════════════════════════════════
-        # STEP 4: Validate required fields
+        # STEP 3: Validate required fields
         # ═══════════════════════════════════════════════════════════════════
         if not parsed.medications:
             raise HTTPException(
@@ -126,11 +95,10 @@ async def upload_and_process_prescription(
             )
         
         # ═══════════════════════════════════════════════════════════════════
-        # STEP 5-6: Store in database
+        # STEP 4-5: Store in database
         # ═══════════════════════════════════════════════════════════════════
         from services.db_store.store_prescription import store_prescription_for_discharge
         from services.parsers.prescription_parser import ParsedPrescription, MedicationData, RecurrenceData, ScheduleData
-        from datetime import date
 
         # Resolve patient_id via discharge
         discharge = db.query(DischargeHistory).filter(DischargeHistory.id == discharge_id).first()
@@ -196,8 +164,6 @@ async def upload_and_process_prescription(
                 "discharge_id": discharge_id,
                 "medications_inserted": result["medications_inserted"],
                 "schedules_inserted": result["schedules_inserted"],
-                "cloudinary_url": cloudinary_url,
-                "cloudinary_public_id": cloudinary_public_id,
             },
             "processing": {
                 "extraction_strategy": strategy,
