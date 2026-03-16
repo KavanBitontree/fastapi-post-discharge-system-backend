@@ -170,7 +170,7 @@ async def upload_and_process_report(
                 "report_id": report.id,
                 "report_name": report.report_name,
                 "discharge_id": report.discharge_id,
-                "patient_email": patient.email,
+                "patient_id": patient.id,  # Use patient_id instead of email
                 "report_date": report.report_date.isoformat() if report.report_date else None,
                 "collection_date": report.collection_date.isoformat() if report.collection_date else None,
                 "received_date": report.received_date.isoformat() if report.received_date else None,
