@@ -1,0 +1,20 @@
+{
+  "document_type": "prescription",
+  "filename": "20260313_162329_Prescription_Diabetes_Johnson 1.pdf",
+  "timestamp": "2026-03-13T16:23:34.424336",
+  "patient_names": [
+    "Johnson, Robert A. Prescription # : RX-2026-01201"
+  ],
+  "patient_ids": [],
+  "patient_emails": [
+    "johnson01@gmail.com"
+  ],
+  "patient_addresses": [],
+  "patient_phones": [
+    "+1 (312) 555-8821"
+  ],
+  "passports": [],
+  "redaction_count": 3,
+  "original_length": 2839,
+  "redacted_length": 2837
+}

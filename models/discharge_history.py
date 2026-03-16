@@ -21,6 +21,11 @@ class DischargeHistory(Base):
     patient_friendly_summary_url = Column(String, nullable=True)
     insurance_ready_url = Column(String, nullable=True)
 
+    # Error tracking (populated when status="failed")
+    error_type = Column(String(50), nullable=True)                    # no_data | duplicate | parse_error | infra_error
+    error_code = Column(String(100), nullable=True)                   # Structured error code (e.g., BILL_DUPLICATE_INVOICE)
+    failure_reason = Column(Text, nullable=True)                      # User-friendly error message
+
     # Relationships
     patient = relationship("Patient", back_populates="discharge_histories")
     bills = relationship("Bill", back_populates="discharge", cascade="all, delete-orphan")

@@ -15,16 +15,71 @@ Only when ALL jobs succeed is the discharge record marked `completed`.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from io import BytesIO
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from sqlalchemy.orm import Session
 
 from models.discharge_history import DischargeHistory
 
 logger = logging.getLogger(__name__)
+
+
+# ── Custom exception ──────────────────────────────────────────────────────────
+
+class DischargeProcessingError(Exception):
+    """
+    Raised by file processors when a document cannot be stored.
+
+    Attributes:
+        message: User-friendly error message
+        error_type: Legacy error type (no_data|duplicate|parse_error|infra_error)
+        error_code: Structured error code (e.g., BILL_DUPLICATE_INVOICE)
+        context: Additional error context for frontend/logging
+    """
+    def __init__(
+        self,
+        message: str,
+        error_type: str = "parse_error",
+        error_code: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ):
+        super().__init__(message)
+        self.error_type = error_type
+        self.error_code = error_code
+        self.context = context or {}
+
+
+# ── Classifier: map raw exceptions to DischargeProcessingError ────────────────
+
+_INFRA_KEYWORDS = ("504", "503", "502", "timeout", "connection", "cloudinary", "huggingface")
+
+def _classify(
+    exc: Exception,
+    fallback_message: str,
+    error_code: Optional[str] = None,
+    context: Optional[Dict[str, Any]] = None,
+) -> DischargeProcessingError:
+    """Wrap an unexpected exception with a user-friendly message and error_type."""
+    if isinstance(exc, DischargeProcessingError):
+        return exc
+    msg = str(exc).lower()
+    if any(k in msg for k in _INFRA_KEYWORDS):
+        return DischargeProcessingError(
+            f"A temporary service error occurred while processing the file. "
+            f"Please retry in a moment. (Detail: {exc})",
+            error_type="infra_error",
+            error_code=error_code or "SERVICE_UNAVAILABLE",
+            context=context,
+        )
+    return DischargeProcessingError(
+        fallback_message,
+        error_type="parse_error",
+        error_code=error_code or "PROCESSING_ERROR",
+        context=context,
+    )
 
 
 # ── Job descriptor ─────────────────────────────────────────────────────────────
@@ -50,6 +105,8 @@ class DischargeResult:
     failed_at_type: Optional[str] = None
     failed_at_index: Optional[int] = None
     error: Optional[str] = None
+    error_type: Optional[str] = None   # no_data | duplicate | parse_error | infra_error
+    error_code: Optional[str] = None   # Structured error code (e.g., BILL_DUPLICATE_INVOICE)
 
 
 # ── Per-type processors (sync — run inside a thread-pool endpoint) ─────────────
@@ -70,22 +127,53 @@ def _process_report(db: Session, discharge: DischargeHistory, job: FileJob) -> N
     from services.parsers.result_classifier import classify_report_results
     from services.db_store.store_report import check_duplicate_report, store_report, parse_date
 
-    url = _upload_to_cloudinary(job.content, job.filename, "report", discharge.patient_id)
-    validated = parse_pdf_from_memory(BytesIO(job.content), job.filename, strategy=job.strategy)
-
-    # Post-parse: classify normal vs abnormal from reference ranges (no LLM needed)
-    validated = classify_report_results(validated)
+    label = f"Report #{job.index + 1} ('{job.filename}')"
+    try:
+        url = _upload_to_cloudinary(job.content, job.filename, "report", discharge.patient_id)
+        validated = parse_pdf_from_memory(BytesIO(job.content), job.filename, strategy=job.strategy)
+        validated = classify_report_results(validated)
+    except DischargeProcessingError:
+        raise
+    except Exception as exc:
+        raise _classify(
+            exc,
+            f"{label}: an unexpected error occurred during parsing. "
+            f"Ensure the file is a valid, readable PDF.",
+            error_code="REPORT_PARSE_ERROR",
+            context={
+                "document_type": "report",
+                "filename": job.filename,
+                "discharge_id": discharge.id,
+            },
+        ) from exc
 
     if not validated.header.report_name or not validated.test_results:
-        raise ValueError(
-            f"Report #{job.index + 1} ('{job.filename}') does not look like a medical report "
-            f"— no report name or test results were extracted. Please upload a valid report PDF."
+        raise DischargeProcessingError(
+            f"{label} does not appear to be a medical lab report — "
+            f"no report name or test results could be extracted. "
+            f"Please upload a valid report PDF.",
+            error_type="no_data",
+            error_code="REPORT_NO_DATA",
+            context={
+                "document_type": "report",
+                "filename": job.filename,
+                "discharge_id": discharge.id,
+            },
         )
 
     report_date = parse_date(validated.header.report_date)
     if check_duplicate_report(db, discharge.id, validated.header.report_name, report_date):
-        raise ValueError(
-            f"Report '{validated.header.report_name}' already exists for this discharge."
+        raise DischargeProcessingError(
+            f"A report named '{validated.header.report_name}' already exists for this discharge. "
+            f"Remove the duplicate file and retry.",
+            error_type="duplicate",
+            error_code="REPORT_DUPLICATE",
+            context={
+                "document_type": "report",
+                "filename": job.filename,
+                "discharge_id": discharge.id,
+                "report_name": validated.header.report_name,
+            },
         )
 
     store_report(db, validated, discharge_id=discharge.id, report_url=url)
@@ -95,16 +183,55 @@ def _process_bill(db: Session, discharge: DischargeHistory, job: FileJob) -> Non
     from services.parsers.bill_parser import parse_bill_pdf_from_memory
     from services.db_store.store_bill import store_bill_for_discharge
 
-    url = _upload_to_cloudinary(job.content, job.filename, "bill", discharge.patient_id)
-    parsed = parse_bill_pdf_from_memory(BytesIO(job.content), job.filename, strategy=job.strategy)
+    label = f"Bill #{job.index + 1} ('{job.filename}')"
+    try:
+        url = _upload_to_cloudinary(job.content, job.filename, "bill", discharge.patient_id)
+        parsed = parse_bill_pdf_from_memory(BytesIO(job.content), job.filename, strategy=job.strategy)
+    except DischargeProcessingError:
+        raise
+    except Exception as exc:
+        raise _classify(
+            exc,
+            f"{label}: an unexpected error occurred during parsing. "
+            f"Ensure the file is a valid, readable PDF.",
+            error_code="BILL_PARSE_ERROR",
+            context={
+                "document_type": "bill",
+                "filename": job.filename,
+                "discharge_id": discharge.id,
+            },
+        ) from exc
 
     if not parsed.bill.invoice_number or not parsed.bill.total_amount or not parsed.line_items:
-        raise ValueError(
-            f"Bill #{job.index + 1} ('{job.filename}') does not look like a medical bill "
-            f"— missing invoice number, total amount, or line items. Please upload a valid bill PDF."
+        raise DischargeProcessingError(
+            f"{label} does not appear to be a medical bill — "
+            f"no invoice number, total amount, or line items could be extracted. "
+            f"Please upload a valid hospital bill PDF.",
+            error_type="no_data",
+            error_code="BILL_PARSE_ERROR",
+            context={
+                "document_type": "bill",
+                "filename": job.filename,
+                "discharge_id": discharge.id,
+            },
         )
 
-    store_bill_for_discharge(db, parsed, discharge_id=discharge.id, bill_url=url)
+    try:
+        store_bill_for_discharge(db, parsed, discharge_id=discharge.id, bill_url=url)
+    except ValueError as exc:
+        # store_bill_for_discharge raises ValueError for duplicate invoice numbers
+        raise DischargeProcessingError(
+            f"{label}: invoice number '{parsed.bill.invoice_number}' already exists in the system. "
+            f"This bill has already been uploaded. Remove the duplicate and retry.",
+            error_type="duplicate",
+            error_code="BILL_DUPLICATE_INVOICE",
+            context={
+                "document_type": "bill",
+                "filename": job.filename,
+                "discharge_id": discharge.id,
+                "invoice_number": parsed.bill.invoice_number,
+            },
+        ) from exc
 
 
 def _process_prescription(db: Session, discharge: DischargeHistory, job: FileJob) -> None:
@@ -114,13 +241,36 @@ def _process_prescription(db: Session, discharge: DischargeHistory, job: FileJob
     )
     from services.db_store.store_prescription import store_prescription_for_discharge
 
-    url = _upload_to_cloudinary(job.content, job.filename, "prescription", discharge.patient_id)
-    parsed = parse_prescription_pdf_from_memory(BytesIO(job.content), job.filename, strategy=job.strategy)
+    label = f"Prescription #{job.index + 1} ('{job.filename}')"
+    try:
+        parsed = parse_prescription_pdf_from_memory(BytesIO(job.content), job.filename, strategy=job.strategy)
+    except DischargeProcessingError:
+        raise
+    except Exception as exc:
+        raise _classify(
+            exc,
+            f"{label}: an unexpected error occurred during parsing. "
+            f"Ensure the file is a valid, readable PDF.",
+            error_code="PRESCRIPTION_PARSE_ERROR",
+            context={
+                "document_type": "prescription",
+                "filename": job.filename,
+                "discharge_id": discharge.id,
+            },
+        ) from exc
 
     if not parsed.medications:
-        raise ValueError(
-            f"Prescription #{job.index + 1} ('{job.filename}') does not look like a prescription "
-            f"— no medications were extracted. Please upload a valid prescription PDF."
+        raise DischargeProcessingError(
+            f"{label} does not appear to contain any medications — "
+            f"no drug names could be extracted. "
+            f"Please upload a valid prescription PDF.",
+            error_type="no_data",
+            error_code="PRESCRIPTION_NO_MEDICATIONS",
+            context={
+                "document_type": "prescription",
+                "filename": job.filename,
+                "discharge_id": discharge.id,
+            },
         )
 
     # Normalise to ParsedPrescription if the parser returned a ValidatedPrescription
@@ -224,6 +374,9 @@ def run_discharge_queue(
                 discharge.id, job.doc_type, job.index + 1, exc, exc_info=True,
             )
             discharge.status = "failed"
+            discharge.error_type = exc.error_type  # type: ignore[attr-defined]
+            discharge.error_code = exc.error_code  # type: ignore[attr-defined]
+            discharge.failure_reason = str(exc)
             db.commit()
 
             return DischargeResult(
@@ -235,6 +388,8 @@ def run_discharge_queue(
                 failed_at_type=job.doc_type,
                 failed_at_index=job.index,
                 error=str(exc),
+                error_type=exc.error_type,  # type: ignore[attr-defined]
+                error_code=exc.error_code,  # type: ignore[attr-defined]
             )
 
     # ── All jobs completed ────────────────────────────────────────────────────

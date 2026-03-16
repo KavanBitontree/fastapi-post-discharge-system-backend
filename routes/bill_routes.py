@@ -12,6 +12,17 @@ import shutil
 from datetime import datetime
 
 from core.database import get_db
+from core.error_handler import (
+    error_invalid_file_format,
+    error_service_cloudinary,
+    error_bill_parse,
+    error_bill_missing_invoice_number,
+    error_bill_missing_total_amount,
+    error_bill_no_line_items,
+    error_discharge_not_found,
+    error_duplicate_bill,
+    error_processing,
+)
 from models.discharge_history import DischargeHistory
 from models.bill import Bill
 
@@ -51,10 +62,7 @@ async def upload_and_process_bill(
     
     # Validate file type
     if not file.filename or not file.filename.lower().endswith('.pdf'):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only PDF files are accepted"
-        )
+        error_invalid_file_format(file.filename or "unknown")
     
     cloudinary_public_id: Optional[str] = None
     
@@ -93,10 +101,7 @@ async def upload_and_process_bill(
             print(f"[bill] Uploaded to Cloudinary: {cloudinary_public_id}")
         except Exception as cloud_err:
             print(f"[bill] Cloudinary upload failed: {cloud_err}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to upload PDF to cloud storage: {str(cloud_err)}"
-            )
+            error_service_cloudinary(str(cloud_err), discharge_id=discharge_id)
 
         # ═══════════════════════════════════════════════════════════════════
         # STEP 3: Extract with LLM (from memory)
@@ -109,41 +114,26 @@ async def upload_and_process_bill(
             print(f"[bill] Extracted invoice: {parsed.bill.invoice_number}, {len(parsed.line_items)} items")
         except Exception as parse_err:
             print(f"[bill] Parsing failed: {parse_err}")
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Could not extract data from PDF: {str(parse_err)[:300]}"
-            )
+            error_bill_parse(discharge_id, safe_filename)
         
         # ═══════════════════════════════════════════════════════════════════
         # STEP 4: Validate required fields
         # ═══════════════════════════════════════════════════════════════════
         if not parsed.bill.invoice_number:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Could not extract invoice number from PDF"
-            )
+            error_bill_missing_invoice_number(discharge_id, safe_filename)
         
         if not parsed.bill.total_amount:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Could not extract total amount from PDF"
-            )
+            error_bill_missing_total_amount(discharge_id, safe_filename)
         
         if len(parsed.line_items) == 0:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="No line items found in PDF"
-            )
+            error_bill_no_line_items(discharge_id, safe_filename)
         
         # ═══════════════════════════════════════════════════════════════════
         # STEP 5: Validate discharge and get patient
         # ═══════════════════════════════════════════════════════════════════
         discharge = db.query(DischargeHistory).filter(DischargeHistory.id == discharge_id).first()
         if not discharge:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Discharge id={discharge_id} not found."
-            )
+            error_discharge_not_found(discharge_id)
         from models.patient import Patient
         patient = db.query(Patient).filter(Patient.id == discharge.patient_id).first()
         
@@ -155,10 +145,7 @@ async def upload_and_process_bill(
         ).first()
         
         if existing:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Bill with invoice number '{parsed.bill.invoice_number}' already exists"
-            )
+            error_duplicate_bill(parsed.bill.invoice_number, discharge_id, safe_filename)
         
         # ═══════════════════════════════════════════════════════════════════
         # STEP 7: Store in database with Cloudinary URL
@@ -204,7 +191,7 @@ async def upload_and_process_bill(
                 "bill_id": bill.id,
                 "invoice_number": bill.invoice_number,
                 "discharge_id": bill.discharge_id,
-                "patient_email": patient.email,
+                "patient_id": patient.id,  # Use patient_id instead of email
                 "invoice_date": bill.invoice_date.isoformat() if bill.invoice_date else None,
                 "total_amount": str(bill.total_amount),
                 "line_items_count": len(parsed.line_items),
@@ -221,10 +208,7 @@ async def upload_and_process_bill(
         raise
     except Exception as e:
         print(f"[bill] Unexpected error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error processing bill: {str(e)}"
-        )
+        error_processing(str(e), discharge_id=discharge_id)
     finally:
         file.file.close()
         # No temporary file cleanup needed - everything was in memory!

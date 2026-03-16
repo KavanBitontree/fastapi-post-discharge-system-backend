@@ -4,7 +4,7 @@ Unified PDF Parser
 Handles both text-based and scanned PDFs with automatic detection.
 
 Routes to appropriate extraction method:
-- Text-based PDFs → text extraction with pdfplumber
+- Text-based PDFs → text extraction with pdfplumber (with PII redaction)
 - Scanned PDFs → vision extraction with HuggingFace
 """
 
@@ -12,12 +12,94 @@ from pathlib import Path
 from typing import Callable, TypeVar, Union, BinaryIO
 import pdfplumber
 from io import BytesIO
+import httpx
 
 from core.chunking import calculate_chunking_strategy, get_model_config
+from core.config import settings
 from services.utils.pdf_detector import PDFTypeDetector
+from services.pii_redaction import redact_pii_from_text
 
 # Type variable for generic return types
 T = TypeVar('T')
+
+LOCAL_OCR_EXTRACT_URL = "http://127.0.0.1:8005/ocr/extract"
+
+
+def _is_development_env() -> bool:
+    return (settings.ENV or "").strip().lower() == "development"
+
+
+def _extract_pages_via_local_ocr(file_bytes: bytes, filename: str) -> list[str]:
+    """
+    Call local OCR microservice and return cleaned text per page.
+
+    The OCR service is expected to remove confidential details before returning text.
+    """
+    with httpx.Client(timeout=300.0) as client:
+        response = client.post(
+            LOCAL_OCR_EXTRACT_URL,
+            files={"file": (filename, file_bytes, "application/pdf")},
+        )
+
+    response.raise_for_status()
+    payload = response.json()
+
+    pages_map = payload.get("extracted", {}).get("pages", {})
+    if not pages_map:
+        return []
+
+    # Keep deterministic page order: page_1, page_2, ...
+    ordered_items = sorted(
+        pages_map.items(),
+        key=lambda item: int(item[0].split("_")[-1]) if item[0].startswith("page_") else 10**9,
+    )
+    return [text or "" for _, text in ordered_items]
+
+
+def _process_scanned_with_local_ocr(
+    file_bytes: bytes,
+    filename: str,
+    extraction_function: Callable,
+    merge_function: Callable,
+) -> T:
+    """Extract scanned content via local OCR, then reuse standard chunk+merge flow."""
+    pages = _extract_pages_via_local_ocr(file_bytes, filename)
+    if not pages:
+        raise ValueError("Local OCR returned no extracted pages")
+
+    total_pages = len(pages)
+    avg_chars_per_page = int(sum(len(p) for p in pages) / total_pages) if total_pages else 0
+    chunk_strategy = calculate_chunking_strategy(
+        total_pages=total_pages,
+        avg_chars_per_page=avg_chars_per_page,
+        model_name="openai/gpt-oss-120b",
+    )
+
+    pages_per_chunk = chunk_strategy.pages_per_chunk
+    total_chunks = chunk_strategy.estimated_total_chunks
+
+    print(f"[unified-parser] Local OCR extracted {total_pages} page(s)")
+    print(
+        f"[unified-parser] Strategy: {pages_per_chunk} pages/chunk, "
+        f"{total_chunks} chunks, ~${chunk_strategy.estimated_cost:.4f}"
+    )
+
+    if total_chunks == 1:
+        chunk_text = "\n\n".join(pages)
+        return extraction_function(chunk_text, 0, 1)
+
+    results = []
+    for i in range(total_chunks):
+        start = i * pages_per_chunk
+        end = min(start + pages_per_chunk, total_pages)
+        chunk_text = "\n\n".join(pages[start:end])
+
+        print(f"[unified-parser] Processing OCR chunk {i+1}/{total_chunks} (pages {start+1}-{end})")
+        result = extraction_function(chunk_text, i, total_chunks)
+        results.append(result)
+
+    print("[unified-parser] Merging OCR chunk results...")
+    return merge_function(results)
 
 
 def analyze_pdf_for_chunking(pdf_path: str) -> dict:
@@ -138,6 +220,16 @@ def extract_with_chunking(
     print(f"[unified-parser] Using {actual_strategy} extraction")
     
     if actual_strategy == "vision":
+        if _is_development_env():
+            with open(pdf_path, "rb") as f:
+                file_bytes = f.read()
+            return _process_scanned_with_local_ocr(
+                file_bytes=file_bytes,
+                filename=Path(pdf_path).name,
+                extraction_function=extraction_function,
+                merge_function=merge_function,
+            )
+
         # Route to vision parser
         # Import here to avoid circular dependency
         from services.parsers.vision_parser import (
@@ -172,6 +264,38 @@ def extract_with_chunking(
                 page.extract_text() or "" for page in pdf.pages
             )
         
+        # ═══════════════════════════════════════════════════════════════════
+        # PII REDACTION - Remove sensitive information before sending to LLM
+        # ═══════════════════════════════════════════════════════════════════
+        document_type = "unknown"
+        if "report" in extraction_function.__name__.lower():
+            document_type = "report"
+        elif "bill" in extraction_function.__name__.lower():
+            document_type = "bill"
+        elif "prescription" in extraction_function.__name__.lower():
+            document_type = "prescription"
+        
+        redacted_text, pii_metadata = redact_pii_from_text(
+            full_text, 
+            document_type=document_type,
+            filename=Path(pdf_path).name
+        )
+        
+        if pii_metadata["redaction_count"] > 0:
+            print(f"[unified-parser] PII REDACTED: {pii_metadata['redaction_count']} items "
+                  f"(names: {len(pii_metadata['patient_names'])}, "
+                  f"ids: {len(pii_metadata['patient_ids'])}, "
+                  f"emails: {len(pii_metadata['patient_emails'])}, "
+                  f"addresses: {len(pii_metadata['patient_addresses'])}, "
+                  f"phones: {len(pii_metadata['patient_phones'])})")
+            print(f"[unified-parser] Redaction info saved to test folder")
+        else:
+            print(f"[unified-parser] No PII detected")
+        
+        # Use redacted text for LLM processing
+        full_text = redacted_text
+        # ═══════════════════════════════════════════════════════════════════
+        
         pages_per_chunk = chunk_info["pages_per_chunk"]
         total_chunks = chunk_info["total_chunks"]
         
@@ -186,11 +310,21 @@ def extract_with_chunking(
             with pdfplumber.open(pdf_path) as pdf:
                 pages = [page.extract_text() or "" for page in pdf.pages]
             
+            # Redact PII from each page before chunking
+            redacted_pages = []
+            for page_text in pages:
+                redacted_page, _ = redact_pii_from_text(
+                    page_text,
+                    document_type=document_type,
+                    filename=f"{Path(pdf_path).name}_page"
+                )
+                redacted_pages.append(redacted_page)
+            
             results = []
             for i in range(total_chunks):
                 start = i * pages_per_chunk
-                end = min(start + pages_per_chunk, len(pages))
-                chunk_text = "\n\n".join(pages[start:end])
+                end = min(start + pages_per_chunk, len(redacted_pages))
+                chunk_text = "\n\n".join(redacted_pages[start:end])
                 
                 print(f"[unified-parser] Processing chunk {i+1}/{total_chunks} "
                       f"(pages {start+1}-{end})")
@@ -275,6 +409,17 @@ def extract_with_chunking_from_memory(
     print(f"[unified-parser] Using {actual_strategy} extraction")
     
     if actual_strategy == "vision":
+        if _is_development_env():
+            pdf_buffer.seek(0)
+            file_bytes = pdf_buffer.read()
+            pdf_buffer.seek(0)
+            return _process_scanned_with_local_ocr(
+                file_bytes=file_bytes,
+                filename=filename,
+                extraction_function=extraction_function,
+                merge_function=merge_function,
+            )
+
         # Route to vision parser (memory-based)
         from services.parsers.vision_parser import (
             parse_report_vision_from_memory,
@@ -327,6 +472,44 @@ def extract_with_chunking_from_memory(
                 page.extract_text() or "" for page in pdf.pages
             )
             
+            # ═══════════════════════════════════════════════════════════════════
+            # PII REDACTION - Remove sensitive information before sending to LLM
+            # ═══════════════════════════════════════════════════════════════════
+            document_type = "unknown"
+            if "report" in extraction_function.__name__.lower():
+                document_type = "report"
+            elif "bill" in extraction_function.__name__.lower():
+                document_type = "bill"
+            elif "prescription" in extraction_function.__name__.lower():
+                document_type = "prescription"
+            
+            redacted_text, pii_metadata = redact_pii_from_text(
+                full_text, 
+                document_type=document_type,
+                filename=filename
+            )
+            
+            if pii_metadata["redaction_count"] > 0:
+                print(f"[unified-parser] PII REDACTED: {pii_metadata['redaction_count']} items "
+                      f"(names: {len(pii_metadata['patient_names'])}, "
+                      f"ids: {len(pii_metadata['patient_ids'])}, "
+                      f"emails: {len(pii_metadata['patient_emails'])}, "
+                      f"addresses: {len(pii_metadata['patient_addresses'])}, "
+                      f"phones: {len(pii_metadata['patient_phones'])}, "
+                      f"passports: {len(pii_metadata.get('passports', []))})")
+                print(f"[unified-parser] Redaction info saved to test folder")
+                
+                # Check if in test mode (masking verification) - stop execution to avoid wasting tokens
+                if pii_metadata.get("test_mode"):
+                    print(f"[unified-parser] TEST MODE: Masking verification complete. Stopping execution.")
+                    raise Exception("TEST_MODE_STOP: Masking verification complete. Stopped before LLM processing to avoid wasting tokens.")
+            else:
+                print(f"[unified-parser] No PII detected")
+            
+            # Use redacted text for LLM processing
+            full_text = redacted_text
+            # ═══════════════════════════════════════════════════════════════════
+            
             pages_per_chunk = chunk_strategy.pages_per_chunk
             total_chunks = chunk_strategy.estimated_total_chunks
             
@@ -340,11 +523,21 @@ def extract_with_chunking_from_memory(
                 # Split text into chunks
                 pages = [page.extract_text() or "" for page in pdf.pages]
                 
+                # Redact PII from each page before chunking
+                redacted_pages = []
+                for page_text in pages:
+                    redacted_page, _ = redact_pii_from_text(
+                        page_text,
+                        document_type=document_type,
+                        filename=f"{filename}_page"
+                    )
+                    redacted_pages.append(redacted_page)
+                
                 results = []
                 for i in range(total_chunks):
                     start = i * pages_per_chunk
-                    end = min(start + pages_per_chunk, len(pages))
-                    chunk_text = "\n\n".join(pages[start:end])
+                    end = min(start + pages_per_chunk, len(redacted_pages))
+                    chunk_text = "\n\n".join(redacted_pages[start:end])
                     
                     print(f"[unified-parser] Processing chunk {i+1}/{total_chunks} "
                           f"(pages {start+1}-{end})")
