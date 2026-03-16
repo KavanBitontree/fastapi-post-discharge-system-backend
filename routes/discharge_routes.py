@@ -287,7 +287,14 @@ async def retry_discharge(
 
 @router.get("/{discharge_id}/status")
 def get_discharge_status(discharge_id: int, db: Session = Depends(get_db)):
-    """Poll the processing progress of a discharge record."""
+    """
+    Poll the processing progress of a discharge record.
+    
+    Returns structured error response when status="failed" with:
+    - error_code: Unique machine-readable identifier (e.g., BILL_DUPLICATE_INVOICE)
+    - error_type: Legacy type for backward compatibility (no_data|duplicate|parse_error|infra_error)
+    - reason: User-friendly message for the admin
+    """
     discharge = db.query(DischargeHistory).filter(DischargeHistory.id == discharge_id).first()
     if not discharge:
         raise HTTPException(
@@ -316,6 +323,7 @@ def get_discharge_status(discharge_id: int, db: Session = Depends(get_db)):
 
     if discharge.status == "failed" and discharge.failure_reason:
         resp["failure"] = {
+            "error_code":  discharge.error_code,
             "error_type":  discharge.error_type,
             "error_title": _ERROR_TITLES.get(discharge.error_type or "", "Processing error"),
             "reason":      discharge.failure_reason,
