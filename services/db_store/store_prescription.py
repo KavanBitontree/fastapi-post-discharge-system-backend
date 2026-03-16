@@ -17,8 +17,38 @@ import os
 from typing import Optional
 
 from sqlalchemy.orm import Session
+from core.enums import MedicineForm
 
 from services.parsers.prescription_parser import parse_prescription_pdf, ParsedPrescription
+
+
+def _normalize_medicine_form(value) -> Optional[MedicineForm]:
+    """Convert parser/LLM medicine form values to the DB enum safely."""
+    if value is None:
+        return None
+
+    if isinstance(value, MedicineForm):
+        return value
+
+    raw = str(value).strip()
+    if not raw:
+        return None
+
+    normalized = raw.lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "tab": "tablet",
+        "tabs": "tablet",
+        "cap": "capsule",
+        "caps": "capsule",
+        "drop": "drops",
+        "inj": "injection",
+    }
+    normalized = aliases.get(normalized, normalized)
+
+    if normalized in MedicineForm._value2member_map_:
+        return MedicineForm(normalized)
+
+    return MedicineForm.OTHER
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +147,7 @@ def store_prescription_for_discharge(
             recurrence_id=recurrence_obj.id,
             is_active=True,
             strength=med_data.strength,
-            form_of_medicine=med_data.form_of_medicine,
+            form_of_medicine=_normalize_medicine_form(med_data.form_of_medicine),
             doctor_id=doctor.id if doctor else None,
             prescription_date=med_data.prescription_date,
         )
@@ -292,7 +322,7 @@ def store_parsed_prescription(parsed: ParsedPrescription) -> dict:
                 recurrence_id=recurrence_obj.id,
                 is_active=True,
                 strength=med_data.strength,
-                form_of_medicine=med_data.form_of_medicine,
+                form_of_medicine=_normalize_medicine_form(med_data.form_of_medicine),
                 doctor_id=doctor.id if doctor else None,
                 prescription_date=med_data.prescription_date,
             )
