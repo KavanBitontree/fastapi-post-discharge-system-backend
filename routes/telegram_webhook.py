@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from fastapi import APIRouter, Request, HTTPException
 
 from core.config import settings
@@ -20,6 +21,10 @@ from services.telegram.bot import handle_update_async
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/telegram", tags=["Telegram Webhook"])
+
+# Deduplication buffer: stores last 100 processed update_ids
+# Telegram retries webhooks if handler takes >30s, this prevents duplicate processing
+_PROCESSED_UPDATES: deque = deque(maxlen=100)
 
 
 @router.post("/webhook")
@@ -32,6 +37,7 @@ async def telegram_webhook(request: Request):
     without a matching token to prevent spoofed payloads.
     
     Spawns handle_update_async as a background task and returns immediately.
+    Includes deduplication to prevent processing the same update twice if Telegram retries.
     """
     # ── Verify secret token ───────────────────────────────────────────────
     expected = settings.TELEGRAM_WEBHOOK_SECRET
@@ -41,6 +47,16 @@ async def telegram_webhook(request: Request):
             raise HTTPException(status_code=403, detail="Invalid webhook token")
 
     update: dict = await request.json()
+
+    # ── Deduplication: prevent processing same update twice ───────────────
+    # Telegram retries the same update_id if handler takes >30 seconds
+    update_id = update.get("update_id")
+    if update_id:
+        if update_id in _PROCESSED_UPDATES:
+            logger.info("Skipping duplicate update_id=%s (Telegram retry)", update_id)
+            return {"ok": True}
+        # Mark as processed
+        _PROCESSED_UPDATES.append(update_id)
 
     try:
         # Spawn async task — don't wait, return 200 immediately to Telegram
