@@ -67,7 +67,10 @@ SPECIALISTS AND THEIR EXACT SCOPE
     Keywords: medicine, medication, drug, prescription, tablet, capsule, dose, dosage,
     when to take, reminder, alarm, schedule, morning/evening pills, Amlodipine, Metformin,
     how many days, refill, today's medicines, next reminder, medication overview, all my meds,
-    complete medication history, am I done with my meds, medication summary
+    complete medication history, am I done with my meds, medication summary, what should I take,
+    what do I take, give me my medicine, my next medicine, medicine I need to take, pills to take,
+    what medicines today, medication for today, next dose, upcoming medicine, medicine schedule,
+    when is my next dose, what time should I take, medication timing
 
 - doctors
     Handles anything about the patient's assigned doctors, their names, contact info, or speciality.
@@ -99,6 +102,12 @@ ROUTING RULES
    Example: {"intents": ["reports", "medicine"]}
 8. When the intent is ambiguous or broad (e.g. "what do I need to know?", "update me"),
    err on the side of routing to more specialists rather than fewer.
+9. MEDICATION QUESTIONS WITH ACTION VERBS — route to medicine:
+   If the patient uses phrases like "give me my medicine", "what should I take",
+   "what do I take", "my next medicine", "medicine I need to take", "pills to take",
+   these are INFORMATION requests about their medication schedule, NOT requests for
+   physical medicine delivery. Route to medicine specialist.
+   Example: "Can you give me my next medicine I need to take" → {"intents": ["medicine"]}
 
 OUTPUT FORMAT (STRICT)
 ======================

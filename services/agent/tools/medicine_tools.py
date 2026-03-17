@@ -43,11 +43,12 @@ def _schedule_str(sched: MedicationSchedule | None) -> str:
     """Render all MedicationSchedule slot flags as a human-readable string."""
     if sched is None:
         return "Not configured"
-    active_slots = [
-        SLOT_LABELS[flag]
-        for flag, _, _ in MEAL_SLOTS
-        if getattr(sched, flag, False)
-    ]
+    active_slots = []
+    for item in MEAL_SLOTS:
+        if len(item) >= 2:
+            flag, label = item[0], item[1]
+            if getattr(sched, flag, False):
+                active_slots.append(label)
     return ", ".join(active_slots) if active_slots else "No slots configured"
 
 
@@ -240,38 +241,57 @@ def build_medicine_tools(discharge_id: int, db: Session) -> list:
         Get which medications are due today and at what times.
         Use when patient asks 'what do I take today?' or 'today's medicines'.
         """
-        today = date.today()
-        meds = (
-            db.query(Medication)
-            .options(joinedload(Medication.schedule), joinedload(Medication.recurrence))
-            .filter(Medication.discharge_id == discharge_id, Medication.is_active == True)
-            .all()
-        )
+        try:
+            today = date.today()
+            meds = (
+                db.query(Medication)
+                .options(joinedload(Medication.schedule), joinedload(Medication.recurrence))
+                .filter(Medication.discharge_id == discharge_id, Medication.is_active == True)
+                .all()
+            )
 
-        due_by_slot: dict[str, list[str]] = {flag: [] for flag, _, _ in MEAL_SLOTS}
+            # Create dictionary with proper unpacking
+            due_by_slot: dict[str, list[str]] = {}
+            for item in MEAL_SLOTS:
+                if len(item) != 3:
+                    print(f"❌ [MEDICINE TOOLS] Invalid MEAL_SLOTS item: {item} (expected 3 elements)")
+                    continue
+                flag, label, hour = item
+                due_by_slot[flag] = []
 
-        for m in meds:
-            if _dosing_complete(m, today) or not _is_active_today(m, today):
-                continue
-            sched = m.schedule
-            if not sched:
-                continue
-            for flag, _, _ in MEAL_SLOTS:
-                if getattr(sched, flag, False):
-                    due_by_slot[flag].append(f"{m.drug_name} {m.strength or ''}")
+            for m in meds:
+                if _dosing_complete(m, today) or not _is_active_today(m, today):
+                    continue
+                sched = m.schedule
+                if not sched:
+                    continue
+                for item in MEAL_SLOTS:
+                    if len(item) != 3:
+                        continue
+                    flag, label, hour = item
+                    if getattr(sched, flag, False):
+                        due_by_slot[flag].append(f"{m.drug_name} {m.strength or ''}")
 
-        lines = [f"Today's medication plan ({today.strftime('%d %b %Y')}):"]
-        any_due = False
-        for flag, label, _ in MEAL_SLOTS:
-            if due_by_slot[flag]:
-                any_due = True
-                lines.append(f"\n  {label}:")
-                for drug in due_by_slot[flag]:
-                    lines.append(f"    • {drug}")
+            lines = [f"Today's medication plan ({today.strftime('%d %b %Y')}):"]
+            any_due = False
+            for item in MEAL_SLOTS:
+                if len(item) != 3:
+                    continue
+                flag, label, hour = item
+                if due_by_slot.get(flag):
+                    any_due = True
+                    lines.append(f"\n  {label}:")
+                    for drug in due_by_slot[flag]:
+                        lines.append(f"    • {drug}")
 
-        if not any_due:
-            return "No medications due today."
-        return "\n".join(lines)
+            if not any_due:
+                return "No medications due today."
+            return "\n".join(lines)
+        except Exception as e:
+            import traceback
+            error_msg = f"Error in get_todays_medications: {str(e)}\n{traceback.format_exc()}"
+            print(f"❌ [MEDICINE TOOLS] {error_msg}")
+            return f"Error retrieving today's medications: {str(e)}"
 
     @tool
     def get_all_medication_data() -> str:
