@@ -104,7 +104,7 @@ def build_medicine_tools(discharge_id: int, db: Session) -> list:
         logger.info(f"[medicine_tools] Found {len(meds)} active medications")
         
         if not meds:
-            result = "No active medications found."
+            result = "No active medications found. You can ask me about your test results, bills, or doctor information instead."
             print(f"⚠️ [MEDICINE TOOLS] Returning: {result}")
             return result
 
@@ -131,7 +131,7 @@ def build_medicine_tools(discharge_id: int, db: Session) -> list:
             .all()
         )
         if not meds:
-            return "No active medications found."
+            return "No active medications found. You can ask me about your test results, bills, or doctor information instead."
 
         lines = ["Medication schedule with times:"]
         for m in meds:
@@ -164,7 +164,7 @@ def build_medicine_tools(discharge_id: int, db: Session) -> list:
             .first()
         )
         if not med:
-            return f"No active medication matching '{drug_name}' found."
+            return f"No active medication matching '{drug_name}' found. Try asking 'what medicines am I on?' to see your full list."
 
         return _med_header(med, date.today())
 
@@ -195,7 +195,7 @@ def build_medicine_tools(discharge_id: int, db: Session) -> list:
                 results.append((m.drug_name, lna))
 
         if not results:
-            return "No reminders have been sent yet."
+            return "No reminders have been sent yet. Your first reminder will be sent at the next scheduled medication time."
 
         results.sort(key=lambda x: x[1], reverse=True)
         lines = ["Last reminders sent:"]
@@ -242,7 +242,7 @@ def build_medicine_tools(discharge_id: int, db: Session) -> list:
                     results.append((m.drug_name, computed))
 
         if not results:
-            return "No upcoming reminders found. Check if medications have schedule slots configured."
+            return "No upcoming reminders found. This might mean your medications don't have schedule slots configured yet. You can ask 'what medicines am I on?' to see your prescriptions."
 
         results.sort(key=lambda x: x[1])
         lines = ["Upcoming reminders:"]
