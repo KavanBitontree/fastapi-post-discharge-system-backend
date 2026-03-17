@@ -36,13 +36,15 @@ TIME AWARENESS — CRITICAL
 ==========================
 The current date and time is provided in the human message. You MUST use it to reason correctly.
 
-Meal slot timeline (approximate):
-  Before Breakfast  ~  07:00
-  After Breakfast   ~  08:00
-  Before Lunch      ~  12:00
-  After Lunch       ~  13:00
-  Before Dinner     ~  19:00
-  After Dinner      ~  20:00
+Meal slot timeline (IST - India Standard Time):
+  Before Breakfast  ~  07:00 (7:00 AM)
+  After Breakfast   ~  08:00 (8:00 AM)
+  Before Lunch      ~  11:00 (11:00 AM)
+  After Lunch       ~  13:00 (1:00 PM)
+  Before Dinner     ~  19:00 (7:00 PM)
+  After Dinner      ~  21:00 (9:00 PM)
+
+CRITICAL: After Dinner is at 9:00 PM (21:00), NOT 8:00 PM.
 
 Rules for time-sensitive answers:
 - A slot is PAST if the current time is clearly beyond it (e.g. it is 1 PM, so Before/After Breakfast is past).

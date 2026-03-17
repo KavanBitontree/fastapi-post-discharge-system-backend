@@ -1,7 +1,7 @@
 """
 services/reminder_service.py
 ------------------------------
-WhatsApp Medication Reminder — rewritten against real DB data.
+Telegram Medication Reminder — rewritten against real DB data.
 
 Real data findings (discharge_id=3, 8 medications):
   - after_breakfast : Amlodipine, Furosemide, Aspirin, Folic Acid  → ONE grouped msg
@@ -10,17 +10,20 @@ Real data findings (discharge_id=3, 8 medications):
   - Rosuvastatin (id=53) has ALL schedule flags = false → logged as warning
 
 Cron flow:
-  1. Fires at each slot time (07/08/12/13/19/20)
-  2. Checks next_notify_at per schedule row — only sends if now >= next_notify_at
+  1. Fires at each slot time (07/08/11/13/19/21), or via one window-based cron endpoint
+  2. Checks next_notify_at per schedule row — only sends if due now / within window
      (or next_notify_at is NULL = never sent yet)
-  3. Groups ALL due medications for a patient into ONE WhatsApp message
-  4. After send: updates latest_notified_at = now, next_notify_at = next slot time
+  3. Groups ALL due medications for a patient into ONE Telegram message PER SLOT
+  4. After send:
+     - latest_notified_at = scheduled slot time if available, else sent_at on first send
+     - next_notify_at     = next enabled slot time
 """
 
 from __future__ import annotations
 
 import html
 import logging
+from collections import defaultdict
 from datetime import date, datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -39,31 +42,59 @@ logger = logging.getLogger(__name__)
 
 TIMEZONE = ZoneInfo("Asia/Kolkata")
 
-# (schedule_column_flag, display_label, cron_hour)
+# (schedule_column_flag, display_label, IST_hour)
+# All times in IST (Asia/Kolkata timezone)
 MEAL_SLOTS: list[tuple[str, str, int]] = [
     ("before_breakfast", "Before Breakfast", 7),
-    ("after_breakfast",  "After Breakfast", 8),
-    ("before_lunch",     "Before Lunch", 11),
-    ("after_lunch",      "After Lunch", 13),
-    ("before_dinner",    "Before Dinner", 18),
-    ("after_dinner",     "After Dinner", 21),
+    ("after_breakfast", "After Breakfast", 8),
+    ("before_lunch", "Before Lunch", 11),
+    ("after_lunch", "After Lunch", 13),
+    ("before_dinner", "Before Dinner", 19),
+    ("after_dinner", "After Dinner", 21),
 ]
 
 SLOT_LABELS: dict[str, str] = {f: l for f, l, _ in MEAL_SLOTS}
-SLOT_ORDER:  list[str]      = [f for f, _, _ in MEAL_SLOTS]
+SLOT_HOURS: dict[str, int] = {f: h for f, _, h in MEAL_SLOTS}
+SLOT_ORDER: list[str] = [f for f, _, _ in MEAL_SLOTS]
 
-FORM_EMOJI: dict[str, str] = {
-    MedicineForm.TABLET:    "💊",
-    MedicineForm.CAPSULE:   "💊",
-    MedicineForm.SYRUP:     "🍶",
+FORM_EMOJI: dict[MedicineForm, str] = {
+    MedicineForm.TABLET: "💊",
+    MedicineForm.CAPSULE: "💊",
+    MedicineForm.SYRUP: "🍶",
     MedicineForm.INJECTION: "💉",
-    MedicineForm.DROPS:     "💧",
-    MedicineForm.CREAM:     "🧴",
-    MedicineForm.OINTMENT:  "🧴",
-    MedicineForm.INHALER:   "💨",
-    MedicineForm.POWDER:    "🫙",
-    MedicineForm.OTHER:     "💊",
+    MedicineForm.DROPS: "💧",
+    MedicineForm.CREAM: "🧴",
+    MedicineForm.OINTMENT: "🧴",
+    MedicineForm.INHALER: "💨",
+    MedicineForm.POWDER: "🫙",
+    MedicineForm.OTHER: "💊",
 }
+
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+def _ensure_ist(dt: datetime) -> datetime:
+    """
+    Normalize datetime to Asia/Kolkata.
+
+    Assumption:
+      - naive datetime values in DB are intended as IST wall-clock times
+    """
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=TIMEZONE)
+    return dt.astimezone(TIMEZONE)
+
+
+def _slot_datetime_for(day: date, slot: str) -> datetime:
+    hour = SLOT_HOURS[slot]
+    return datetime(day.year, day.month, day.day, hour, 0, tzinfo=TIMEZONE)
+
+
+def _group_due_items_by_slot(due_items: list[dict]) -> dict[str, list[dict]]:
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for item in due_items:
+        grouped[item["slot"]].append(item)
+    return {slot: grouped[slot] for slot in SLOT_ORDER if slot in grouped}
 
 
 # ─── Recurrence ───────────────────────────────────────────────────────────────
@@ -112,17 +143,28 @@ def _days_remaining(med: Medication, today: date) -> Optional[int]:
     return max(0, med.dosing_days - (today - anchor).days)
 
 
-# ─── next_notify_at logic ────────────────────────────────────────────────────
+# ─── next_notify_at logic ─────────────────────────────────────────────────────
 
 def _compute_next_notify_at(schedule: MedicationSchedule, after: datetime) -> Optional[datetime]:
     """
     Look at which slot flags are True on this schedule,
     then return the datetime of the next one AFTER *after*.
 
+    All times are in IST (Asia/Kolkata timezone).
+
+    Meal slot timeline:
+      Before Breakfast  ~  07:00
+      After Breakfast   ~  08:00
+      Before Lunch      ~  11:00
+      After Lunch       ~  13:00
+      Before Dinner     ~  19:00
+      After Dinner      ~  21:00
+
     Example: schedule has after_lunch=True, after_dinner=True
-      - If called at 13:01 → returns today 20:00
-      - If called at 20:01 → returns tomorrow 13:00
+      - If called at 13:01 IST → returns today 21:00 IST
+      - If called at 21:01 IST → returns tomorrow 13:00 IST
     """
+    after = _ensure_ist(after)
     today = after.date()
     tomorrow = today + timedelta(days=1)
 
@@ -159,11 +201,8 @@ def _is_due_now(schedule: MedicationSchedule, slot: str, now: datetime) -> bool:
     if schedule.next_notify_at is None:
         return True  # never sent yet → send now
 
-    # Normalize to aware datetime for comparison
-    nna = schedule.next_notify_at
-    if nna.tzinfo is None:
-        nna = nna.replace(tzinfo=TIMEZONE)
-
+    nna = _ensure_ist(schedule.next_notify_at)
+    now = _ensure_ist(now)
     return now >= nna
 
 
@@ -175,23 +214,33 @@ def build_telegram_message(
     now: datetime,
 ) -> str:
     """
-    Builds ONE grouped Telegram message (HTML) for ALL medications due at this slot.
+    Builds ONE grouped Telegram message (HTML) for ALL medications due at ONE slot.
     """
-    today      = now.date()
-    slot       = due_items[0]["slot"]
+    if not due_items:
+        raise ValueError("due_items must not be empty")
+
+    slot_set = {item["slot"] for item in due_items}
+    if len(slot_set) != 1:
+        raise ValueError(f"build_telegram_message expects one slot only, got: {sorted(slot_set)}")
+
+    now = _ensure_ist(now)
+    today = now.date()
+    slot = due_items[0]["slot"]
     slot_label = SLOT_LABELS.get(slot, "Scheduled Time")
-    time_str   = now.strftime("%I:%M %p")
-    count      = len(due_items)
+    time_str = now.strftime("%I:%M %p")
+    count = len(due_items)
+
+    patient_name = patient.full_name or "Patient"
 
     lines: list[str] = [
-        f"👋 Hello <b>{html.escape(patient.full_name)}</b>!",
+        f"👋 Hello <b>{html.escape(patient_name)}</b>!",
         f"🕐 It's <b>{time_str}</b> — time for your <b>{slot_label}</b> medicine{'s' if count > 1 else ''}.\n",
     ]
 
     for idx, item in enumerate(due_items, 1):
         med: Medication = item["medication"]
 
-        emoji    = FORM_EMOJI.get(med.form_of_medicine, "💊") if med.form_of_medicine else "💊"
+        emoji = FORM_EMOJI.get(med.form_of_medicine, "💊") if med.form_of_medicine else "💊"
         form_str = f" ({html.escape(med.form_of_medicine.value.title())})" if med.form_of_medicine else ""
         strength = f" {html.escape(med.strength)}" if med.strength else ""
         days_left = _days_remaining(med, today)
@@ -264,7 +313,7 @@ def collect_due_medications(
 
     Uses next_notify_at to avoid double-sending.
     """
-    today = now.date()
+    today = _ensure_ist(now).date()
 
     meds: list[Medication] = (
         db.query(Medication)
@@ -301,7 +350,7 @@ def collect_due_medications(
             if not any(getattr(sched, f, False) for f, _, _ in MEAL_SLOTS):
                 logger.warning(
                     "med id=%s '%s' has ALL schedule flags=false — will never be reminded!",
-                    med.id, med.drug_name
+                    med.id, med.drug_name,
                 )
             continue
 
@@ -316,23 +365,34 @@ def update_schedule_after_send(
     db: Session,
     schedule: MedicationSchedule,
     sent_at: datetime,
+    slot: Optional[str] = None,
 ) -> None:
     """
     After a successful send:
       latest_notified_at = next_notify_at (the exact scheduled slot time),
-                           or sent_at on the very first notification (NULL case).
+                           or the slot's scheduled time on first send if slot is provided,
+                           or sent_at as fallback.
       next_notify_at     = next slot time for THIS schedule's active flags.
 
     Flow:
-      - First send : next_notify_at is NULL → latest_notified_at = sent_at (now)
-                     → next_notify_at set for the first time → all future sends
-                       skip the 6-slot scan and go straight to next_notify_at.
-      - All subsequent sends : latest_notified_at = the stored slot time
-                               (e.g. 13:00), not the actual cron fire time
-                               (e.g. 13:02), keeping the audit trail clean.
+      - First send with known slot:
+          next_notify_at is NULL
+          → latest_notified_at = scheduled slot wall-clock time (e.g. 13:00)
+          → next_notify_at set to the next enabled slot
+      - First send without slot:
+          latest_notified_at = sent_at
+      - Subsequent sends:
+          latest_notified_at = stored next_notify_at (scheduled slot time)
     """
-    # Capture scheduled slot time BEFORE computing the next one
-    notified_at = schedule.next_notify_at or sent_at
+    sent_at = _ensure_ist(sent_at)
+
+    if schedule.next_notify_at is not None:
+        notified_at = _ensure_ist(schedule.next_notify_at)
+    elif slot:
+        notified_at = _slot_datetime_for(sent_at.date(), slot)
+    else:
+        notified_at = sent_at
+
     next_dt = _compute_next_notify_at(schedule, sent_at)
 
     schedule.latest_notified_at = notified_at
@@ -358,9 +418,8 @@ def run_reminder_for_slot(db: Session, slot: str) -> None:
     from core.enums import SessionStatus
 
     now = datetime.now(TIMEZONE)
-    logger.info("\u25b6 Reminder job \u2014 slot='%s'  time=%s", slot, now.strftime("%H:%M"))
+    logger.info("▶ Reminder job — slot='%s'  time=%s", slot, now.strftime("%H:%M"))
 
-    # Only patients with a verified Telegram session receive reminders
     verified = (
         db.query(TelegramSession)
         .filter(TelegramSession.session_status == SessionStatus.VERIFIED)
@@ -368,7 +427,7 @@ def run_reminder_for_slot(db: Session, slot: str) -> None:
     )
 
     if not verified:
-        logger.info("No verified Telegram patients \u2014 slot '%s' skipped", slot)
+        logger.info("No verified Telegram patients — slot '%s' skipped", slot)
         return
 
     did_to_chat: dict[int, str] = {
@@ -408,9 +467,9 @@ def run_reminder_for_slot(db: Session, slot: str) -> None:
             for item in due:
                 sched = item["medication"].schedule
                 if sched:
-                    update_schedule_after_send(db, sched, now)
+                    update_schedule_after_send(db, sched, now, slot=item["slot"])
 
-    logger.info("\u2714 Slot '%s' done \u2014 %d patient(s) notified via Telegram", slot, sent_count)
+    logger.info("✔ Slot '%s' done — %d patient(s) notified via Telegram", slot, sent_count)
 
 
 # ─── Single cron orchestrator (all slots, window-based) ──────────────────────
@@ -421,20 +480,23 @@ def run_all_due_reminders(db: Session, window_minutes: int = 20) -> dict:
 
     For every verified Telegram patient, collects all medications whose
     next_notify_at falls within:
-        next_notify_at  <=  now  <=  next_notify_at + window_minutes
+        next_notify_at <= now <= next_notify_at + window_minutes
 
     This ensures a late cron hit (e.g. 8:20 for an 8:00 notification) still
     delivers the reminder, while stale notifications (older than the window)
     are skipped to avoid confusing double-sends.
+
+    Important:
+      - Medications are grouped and sent PER SLOT, not mixed across slots.
     """
     from models.telegram_session import TelegramSession
     from core.enums import SessionStatus
 
-    now    = datetime.now(TIMEZONE)
+    now = datetime.now(TIMEZONE)
     window = timedelta(minutes=window_minutes)
 
     logger.info(
-        "\u25b6 Cron reminder job \u2014 time=%s  window=%d min",
+        "▶ Cron reminder job — time=%s  window=%d min",
         now.strftime("%H:%M"), window_minutes,
     )
 
@@ -445,7 +507,7 @@ def run_all_due_reminders(db: Session, window_minutes: int = 20) -> dict:
     )
 
     if not verified:
-        logger.info("No verified Telegram patients \u2014 cron skipped")
+        logger.info("No verified Telegram patients — cron skipped")
         return {"notified": 0, "skipped": 0}
 
     did_to_chat: dict[int, str] = {
@@ -517,6 +579,7 @@ def run_all_due_reminders(db: Session, window_minutes: int = 20) -> dict:
                     if slot_time <= now <= slot_time + window:
                         matched_slot = flag
                         break
+
                 if matched_slot:
                     due.append({"medication": med, "slot": matched_slot})
                 else:
@@ -526,9 +589,7 @@ def run_all_due_reminders(db: Session, window_minutes: int = 20) -> dict:
                     )
                 continue
 
-            nna = sched.next_notify_at
-            if nna.tzinfo is None:
-                nna = nna.replace(tzinfo=TIMEZONE)
+            nna = _ensure_ist(sched.next_notify_at)
 
             # Window check: due in the past ≤ window_minutes ago
             if not (nna <= now <= nna + window):
@@ -553,20 +614,29 @@ def run_all_due_reminders(db: Session, window_minutes: int = 20) -> dict:
             skip_count += 1
             continue
 
-        message = build_telegram_message(patient, due, now)
-        success = send_telegram_message(chat_id, message)
+        due_by_slot = _group_due_items_by_slot(due)
+        patient_sent = False
 
-        if success:
+        for slot, slot_due in due_by_slot.items():
+            message = build_telegram_message(patient, slot_due, now)
+            success = send_telegram_message(chat_id, message)
+
+            if not success:
+                continue
+
+            patient_sent = True
             sent_count += 1
-            for item in due:
-                s = item["medication"].schedule
-                if s:
-                    update_schedule_after_send(db, s, now)
-        else:
+
+            for item in slot_due:
+                sched = item["medication"].schedule
+                if sched:
+                    update_schedule_after_send(db, sched, now, slot=item["slot"])
+
+        if not patient_sent:
             skip_count += 1
 
     logger.info(
-        "\u2714 Cron reminder done \u2014 %d notified, %d skipped",
+        "✔ Cron reminder done — %d message batch(es) notified, %d skipped",
         sent_count, skip_count,
     )
     return {"notified": sent_count, "skipped": skip_count}

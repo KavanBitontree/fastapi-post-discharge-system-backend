@@ -279,7 +279,21 @@ def supervisor_router(state: AgentState) -> AgentState:
     """
     state, abort = increment_and_check(state, "supervisor")
     if abort:
-        return {**state, "intents": ["end"], "pending_intents": ["end"]}
+        # Hit call limit - try keyword fallback instead of defaulting to end
+        user_msg_lower = state["user_msg"].lower()
+        
+        if any(word in user_msg_lower for word in ["medicine", "medication", "drug", "pill", "dose", "prescription"]):
+            intents = ["medicine"]
+        elif any(word in user_msg_lower for word in ["report", "test", "result", "blood", "lab"]):
+            intents = ["reports"]
+        elif any(word in user_msg_lower for word in ["bill", "payment", "charge", "invoice"]):
+            intents = ["bills"]
+        elif any(word in user_msg_lower for word in ["doctor", "physician", "consultant"]):
+            intents = ["doctors"]
+        else:
+            intents = ["end"]
+        
+        return {**state, "intents": intents, "pending_intents": intents}
 
     llm = get_supervisor_llm()
     history_str = format_chat_history(state["chat_history"])
@@ -338,7 +352,21 @@ def supervisor_router(state: AgentState) -> AgentState:
     except Exception as e:
         logger.error("Supervisor routing failed: %s", e, exc_info=True)
         print(f"❌ [SUPERVISOR] Routing failed: {e}")
-        intents = ["medicine"]  # Default to medicine instead of end on error
+        
+        # Try keyword fallback
+        user_msg_lower = state["user_msg"].lower()
+        
+        if any(word in user_msg_lower for word in ["medicine", "medication", "drug", "pill", "dose", "prescription"]):
+            intents = ["medicine"]
+        elif any(word in user_msg_lower for word in ["report", "test", "result", "blood", "lab"]):
+            intents = ["reports"]
+        elif any(word in user_msg_lower for word in ["bill", "payment", "charge", "invoice"]):
+            intents = ["bills"]
+        elif any(word in user_msg_lower for word in ["doctor", "physician", "consultant"]):
+            intents = ["doctors"]
+        else:
+            # Only default to end if NO keywords match
+            intents = ["end"]
 
     print(f"🎯 [SUPERVISOR] Routed to: {intents}")
     logger.info("Supervisor routed → %s", intents)
@@ -361,14 +389,33 @@ def supervisor_synthesizer(state: AgentState) -> AgentState:
 
     llm = get_supervisor_llm()
 
-    if state["node_responses"]:
-        responses_text = "\n\n".join(
-            f"[{domain.upper()}]\n{answer}"
-            for domain, answer in state["node_responses"].items()
-        )
-    else:
-        # Greeting or off-topic — no specialist data collected
-        responses_text = "(No specialist data was collected. The patient's message may be a greeting or an off-topic question.)"
+    # If no specialist data collected (greeting or off-topic), skip LLM synthesis
+    if not state["node_responses"]:
+        # Determine if it's a greeting or off-topic based on routing intent
+        intents = state.get("intents", [])
+        if intents == ["end"]:
+            # Off-topic or greeting — use generic response
+            user_msg_lower = state["user_msg"].lower()
+            
+            # Check if it's a pure greeting
+            greetings = ["hi", "hello", "hey", "good morning", "good afternoon", "good evening", "howdy"]
+            is_greeting = any(state["user_msg"].strip().lower().startswith(g) for g in greetings)
+            
+            if is_greeting:
+                final = "Hello! 👋 How can I help you today? I'm here to assist with your medications, test results, bills, and doctor information."
+            else:
+                final = "I'm here to help you with your health information such as medications, test results, bills, or doctor details. Feel free to ask me anything about those."
+        else:
+            # Shouldn't happen, but fallback
+            final = "Hello! 😊 How can I help you today?"
+        
+        return {**state, "final_answer": final}
+
+    # Specialist data exists — synthesize with LLM
+    responses_text = "\n\n".join(
+        f"[{domain.upper()}]\n{answer}"
+        for domain, answer in state["node_responses"].items()
+    )
 
     messages = [
         SystemMessage(content=_SYNTHESIS_SYSTEM),

@@ -40,15 +40,16 @@ def _recurrence_str(rec: RecurrenceType | None) -> str:
 
 
 def _schedule_str(sched: MedicationSchedule | None) -> str:
-    """Render all MedicationSchedule slot flags as a human-readable string."""
+    """Render all MedicationSchedule slot flags as a human-readable string with times."""
     if sched is None:
         return "Not configured"
     active_slots = []
     for item in MEAL_SLOTS:
-        if len(item) >= 2:
-            flag, label = item[0], item[1]
+        if len(item) >= 3:
+            flag, label, hour = item[0], item[1], item[2]
             if getattr(sched, flag, False):
-                active_slots.append(label)
+                time_str = f"{hour:02d}:00"
+                active_slots.append(f"{label} (~{time_str})")
     return ", ".join(active_slots) if active_slots else "No slots configured"
 
 
@@ -132,7 +133,7 @@ def build_medicine_tools(discharge_id: int, db: Session) -> list:
         if not meds:
             return "No active medications found."
 
-        lines = ["Medication schedule:"]
+        lines = ["Medication schedule with times:"]
         for m in meds:
             slot_str = _schedule_str(m.schedule)
             lines.append(f"  • {m.drug_name} {m.strength or ''}: {slot_str}")
@@ -184,8 +185,13 @@ def build_medicine_tools(discharge_id: int, db: Session) -> list:
             sched = m.schedule
             if sched and sched.latest_notified_at:
                 lna = sched.latest_notified_at
+                # Convert UTC to IST properly
                 if lna.tzinfo is None:
-                    lna = lna.replace(tzinfo=TIMEZONE)
+                    # Database stores in UTC, so treat naive datetime as UTC and convert to IST
+                    from zoneinfo import ZoneInfo
+                    lna = lna.replace(tzinfo=ZoneInfo("UTC")).astimezone(TIMEZONE)
+                else:
+                    lna = lna.astimezone(TIMEZONE)
                 results.append((m.drug_name, lna))
 
         if not results:
@@ -194,7 +200,9 @@ def build_medicine_tools(discharge_id: int, db: Session) -> list:
         results.sort(key=lambda x: x[1], reverse=True)
         lines = ["Last reminders sent:"]
         for drug, dt in results:
-            lines.append(f"  • {drug}: {dt.strftime('%d %b %Y at %I:%M %p')}")
+            # Ensure we're displaying IST time
+            ist_time = dt.astimezone(TIMEZONE) if dt.tzinfo else dt
+            lines.append(f"  • {drug}: {ist_time.strftime('%d %b %Y at %I:%M %p IST')}")
         return "\n".join(lines)
 
     @tool
@@ -217,8 +225,15 @@ def build_medicine_tools(discharge_id: int, db: Session) -> list:
                 continue
             nna = sched.next_notify_at
             if nna:
+                # Convert UTC to IST properly
                 if nna.tzinfo is None:
-                    nna = nna.replace(tzinfo=TIMEZONE)
+                    # Database stores in UTC, so treat naive datetime as UTC and convert to IST
+                    from zoneinfo import ZoneInfo
+                    nna = nna.replace(tzinfo=ZoneInfo("UTC")).astimezone(TIMEZONE)
+                else:
+                    # If timezone-aware, convert to IST
+                    nna = nna.astimezone(TIMEZONE)
+                
                 if nna > now:
                     results.append((m.drug_name, nna))
             else:
@@ -232,7 +247,9 @@ def build_medicine_tools(discharge_id: int, db: Session) -> list:
         results.sort(key=lambda x: x[1])
         lines = ["Upcoming reminders:"]
         for drug, dt in results:
-            lines.append(f"  • {drug}: {dt.strftime('%d %b %Y at %I:%M %p')}")
+            # Ensure we're displaying IST time
+            ist_time = dt.astimezone(TIMEZONE) if dt.tzinfo else dt
+            lines.append(f"  • {drug}: {ist_time.strftime('%d %b %Y at %I:%M %p IST')}")
         return "\n".join(lines)
 
     @tool
@@ -280,7 +297,8 @@ def build_medicine_tools(discharge_id: int, db: Session) -> list:
                 flag, label, hour = item
                 if due_by_slot.get(flag):
                     any_due = True
-                    lines.append(f"\n  {label}:")
+                    time_str = f"{hour:02d}:00"
+                    lines.append(f"\n  {label} (~{time_str}):")
                     for drug in due_by_slot[flag]:
                         lines.append(f"    • {drug}")
 
