@@ -206,6 +206,36 @@ def _is_due_now(schedule: MedicationSchedule, slot: str, now: datetime) -> bool:
     return now >= nna
 
 
+def _match_slot_within_window(
+    schedule: MedicationSchedule,
+    now: datetime,
+    window: timedelta,
+    not_before: Optional[datetime] = None,
+) -> tuple[Optional[str], Optional[datetime]]:
+    """
+    Find an active slot for today whose scheduled time is within the current
+    delivery window. If `not_before` is provided, only consider slots strictly
+    after that timestamp.
+    """
+    matched_slot: Optional[str] = None
+    matched_time: Optional[datetime] = None
+
+    for flag, _, hour in MEAL_SLOTS:
+        if not getattr(schedule, flag, False):
+            continue
+
+        slot_time = datetime(now.year, now.month, now.day, hour, 0, tzinfo=TIMEZONE)
+
+        if not_before and slot_time <= not_before:
+            continue
+
+        if slot_time <= now <= slot_time + window:
+            matched_slot = flag
+            matched_time = slot_time
+
+    return matched_slot, matched_time
+
+
 # ─── Telegram message builder ────────────────────────────────────────────────
 
 def build_telegram_message(
@@ -593,6 +623,24 @@ def run_all_due_reminders(db: Session, window_minutes: int = 20) -> dict:
 
             # Window check: due in the past ≤ window_minutes ago
             if not (nna <= now <= nna + window):
+                # Allow current-slot recovery when a prior slot was missed and stale.
+                if now > nna + window:
+                    matched_slot, matched_time = _match_slot_within_window(
+                        sched,
+                        now,
+                        window,
+                        not_before=nna,
+                    )
+                    if matched_slot:
+                        logger.info(
+                            "med id=%s '%s' recovered from stale next_notify_at=%s using slot=%s at %s",
+                            med.id,
+                            med.drug_name,
+                            nna.isoformat(),
+                            matched_slot,
+                            matched_time.isoformat() if matched_time else "unknown",
+                        )
+                        due.append({"medication": med, "slot": matched_slot})
                 continue
 
             # Map notify hour → slot flag
