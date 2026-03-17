@@ -295,16 +295,41 @@ def supervisor_router(state: AgentState) -> AgentState:
     try:
         response = llm.invoke(messages)
         raw = response.content.strip()
+        
+        print(f"🎯 [SUPERVISOR] Raw LLM response: {raw[:200]}")
+        logger.info(f"[supervisor] Raw LLM response: {raw[:200]}")
 
-        # Strip markdown fences if model wraps in ```json
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        raw = raw.strip()
+        # Handle empty response
+        if not raw:
+            logger.error("[supervisor] LLM returned empty response")
+            print("❌ [SUPERVISOR] LLM returned empty response, defaulting to medicine")
+            intents = ["medicine"]  # Default to medicine instead of end
+        else:
+            # Strip markdown fences if model wraps in ```json
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+            raw = raw.strip()
 
-        parsed = json.loads(raw)
-        intents: list[str] = parsed.get("intents", ["end"])
+            # Try to parse JSON
+            try:
+                parsed = json.loads(raw)
+                intents: list[str] = parsed.get("intents", ["end"])
+            except json.JSONDecodeError as je:
+                logger.error(f"[supervisor] JSON parse error: {je}, raw={raw[:200]}")
+                print(f"❌ [SUPERVISOR] JSON parse error, raw response: {raw[:200]}")
+                # Try to extract intents from text if JSON parsing fails
+                if "medicine" in raw.lower():
+                    intents = ["medicine"]
+                elif "report" in raw.lower():
+                    intents = ["reports"]
+                elif "bill" in raw.lower():
+                    intents = ["bills"]
+                elif "doctor" in raw.lower():
+                    intents = ["doctors"]
+                else:
+                    intents = ["end"]
 
         # Validate — only allow known values
         valid = {"reports", "bills", "medicine", "doctors", "end"}
@@ -312,7 +337,8 @@ def supervisor_router(state: AgentState) -> AgentState:
 
     except Exception as e:
         logger.error("Supervisor routing failed: %s", e, exc_info=True)
-        intents = ["end"]
+        print(f"❌ [SUPERVISOR] Routing failed: {e}")
+        intents = ["medicine"]  # Default to medicine instead of end on error
 
     print(f"🎯 [SUPERVISOR] Routed to: {intents}")
     logger.info("Supervisor routed → %s", intents)
