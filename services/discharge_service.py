@@ -202,10 +202,23 @@ def _process_bill(db: Session, discharge: DischargeHistory, job: FileJob) -> Non
             },
         ) from exc
 
-    if not parsed.bill.invoice_number or not parsed.bill.total_amount or not parsed.line_items:
+    # ── Required-field validation ─────────────────────────────────────────────
+    # IMPORTANT: use `is None` for total_amount, NOT `not parsed.bill.total_amount`.
+    # A fully-paid bill legitimately has total_amount=Decimal("0.00"), which is
+    # falsy in Python — `not Decimal("0")` evaluates to True and would wrongly
+    # reject a valid zero-balance bill.
+    missing_fields = []
+    if not parsed.bill.invoice_number:
+        missing_fields.append("invoice number")
+    if parsed.bill.total_amount is None:
+        missing_fields.append("total amount")
+    if not parsed.line_items:
+        missing_fields.append("line items")
+
+    if missing_fields:
         raise DischargeProcessingError(
             f"{label} does not appear to be a medical bill — "
-            f"no invoice number, total amount, or line items could be extracted. "
+            f"could not extract: {', '.join(missing_fields)}. "
             f"Please upload a valid hospital bill PDF.",
             error_type="no_data",
             error_code="BILL_PARSE_ERROR",
@@ -213,6 +226,7 @@ def _process_bill(db: Session, discharge: DischargeHistory, job: FileJob) -> Non
                 "document_type": "bill",
                 "filename": job.filename,
                 "discharge_id": discharge.id,
+                "missing_fields": missing_fields,
             },
         )
 
