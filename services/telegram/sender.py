@@ -88,6 +88,29 @@ def send_message(chat_id: str | int, text: str, parse_mode: str = "HTML") -> boo
         return False
 
 
+def send_chat_action(chat_id: str | int, action: str = "typing") -> bool:
+    """
+    Send a chat action (typing indicator) to show the bot is working.
+    Action can be: typing, upload_photo, record_video, upload_document, etc.
+    The indicator lasts 5 seconds or until a message is sent.
+    Returns True on success.
+    """
+    try:
+        r = httpx.post(
+            f"{_BASE}/sendChatAction",
+            json={
+                "chat_id": chat_id,
+                "action": action,
+            },
+            timeout=5,
+        )
+        r.raise_for_status()
+        return True
+    except Exception as exc:
+        logger.warning("sendChatAction failed (chat=%s): %s", chat_id, exc)
+        return False
+
+
 # ── Webhook management ────────────────────────────────────────────────────────
 
 def set_webhook(url: str, secret_token: str = "") -> bool:

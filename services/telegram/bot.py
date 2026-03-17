@@ -45,7 +45,7 @@ from models.discharge_history import DischargeHistory
 from models.patient import Patient
 from models.telegram_session import TelegramSession
 from services.telegram.otp import generate_otp, send_otp_sms
-from services.telegram.sender import send_message, send_placeholder, edit_message, set_my_commands
+from services.telegram.sender import send_message, send_chat_action, edit_message, set_my_commands
 from core.database import SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -362,38 +362,33 @@ def _handle_verified(db: Session, sess: TelegramSession, chat_id: str, text: str
         )
         return
 
-    placeholder_id: int | None = None
     try:
         # Import here to avoid circular imports at module load time
         from services.agent.graph import build_agent_graph
         from services.agent.chat_history_service import fetch_last_10, save_turn
         from services.agent.state import AgentState
 
-        # Show animated thinking dots in the placeholder bubble (•  →  ••  →  •••)
-        placeholder_id = send_placeholder(chat_id, "•")
-        _DOT_FRAMES = ("•", "••", "•••")
+        # Show native Telegram "typing..." indicator in chat header
+        send_chat_action(chat_id, "typing")
 
-        try:
-            history  = fetch_last_10(discharge_id, db)
-            now_str  = datetime.now(TIMEZONE).strftime("%A, %d %b %Y, %I:%M %p IST")
-            initial_state: AgentState = {
-                "discharge_id":     discharge_id,
-                "user_msg":         text.strip(),
-                "current_datetime": now_str,
-                "chat_history":     history,
-                "intents":          [],
-                "pending_intents":  [],
-                "node_responses":   {},
-                "final_answer":     None,
-                "call_counts":      {},
-                "total_calls":      0,
-                "error":            None,
-            }
+        history  = fetch_last_10(discharge_id, db)
+        now_str  = datetime.now(TIMEZONE).strftime("%A, %d %b %Y, %I:%M %p IST")
+        initial_state: AgentState = {
+            "discharge_id":     discharge_id,
+            "user_msg":         text.strip(),
+            "current_datetime": now_str,
+            "chat_history":     history,
+            "intents":          [],
+            "pending_intents":  [],
+            "node_responses":   {},
+            "final_answer":     None,
+            "call_counts":      {},
+            "total_calls":      0,
+            "error":            None,
+        }
 
-            graph  = build_agent_graph(discharge_id, db)
-            result: AgentState = graph.invoke(initial_state)
-        finally:
-            pass
+        graph  = build_agent_graph(discharge_id, db)
+        result: AgentState = graph.invoke(initial_state)
 
         answer = result.get("final_answer") or (
             "I'm sorry, that's outside my scope. "
@@ -402,32 +397,19 @@ def _handle_verified(db: Session, sess: TelegramSession, chat_id: str, text: str
         save_turn(discharge_id, text, answer, db)
 
         chunks = _split_message(answer)
-
-        if placeholder_id is not None:
-            # Replace the • bubble with the real answer in-place
-            if not edit_message(chat_id, placeholder_id, chunks[0]):
-                logger.warning("edit_message failed for chat=%s; answer may not have shown", chat_id)
-            for chunk in chunks[1:]:
-                send_message(chat_id, chunk)
-        else:
-            # Placeholder send failed — just send all chunks normally
-            for chunk in chunks:
-                send_message(chat_id, chunk)
+        for chunk in chunks:
+            send_message(chat_id, chunk)
 
     except Exception as exc:
         logger.error("LangGraph error for Telegram discharge %s: %s", discharge_id, exc, exc_info=True)
-        # Replace placeholder with error message so it never stays stuck
-        if placeholder_id is not None and not edit_message(chat_id, placeholder_id, _AGENT_ERROR):
-            send_message(chat_id, _AGENT_ERROR)
-        elif placeholder_id is None:
-            send_message(chat_id, _AGENT_ERROR)
+        send_message(chat_id, _AGENT_ERROR)
 
 
 async def _handle_verified_async(db: Session, sess: TelegramSession, chat_id: str, text: str) -> None:
     """
     Async version of _handle_verified. Routes message to LangGraph agent asynchronously.
-    
-    Uses asyncio-based animation instead of threading.
+
+    Uses Telegram's native typing indicator instead of animated placeholder.
     Invokes graph with ainvoke() for non-blocking execution.
     """
     cmd = text.split()[0].lower().split("@")[0] if text else ""
@@ -449,65 +431,35 @@ async def _handle_verified_async(db: Session, sess: TelegramSession, chat_id: st
         )
         return
 
-    placeholder_id: int | None = None
     try:
         # Import here to avoid circular imports at module load time
         from services.agent.graph import build_agent_graph
         from services.agent.chat_history_service import fetch_last_10, save_turn
         from services.agent.state import AgentState
 
-        # Show animated thinking dots in the placeholder bubble (•  →  ••  →  •••)
-        placeholder_id = send_placeholder(chat_id, "•")
-        _typing_stop = asyncio.Event()
-        _DOT_FRAMES = ("•", "••", "•••")
+        # Show native Telegram "typing..." indicator in chat header
+        send_chat_action(chat_id, "typing")
 
-        async def _animate_async():
-            """Async animation task — updates placeholder with rotating dots."""
-            frame = 1  # placeholder already shows frame 0 ("•")
-            try:
-                while not _typing_stop.is_set():
-                    try:
-                        await asyncio.sleep(0.7)  # ≤1 edit/s keeps us under Telegram's rate limit
-                    except asyncio.CancelledError:
-                        break
-                    if _typing_stop.is_set():
-                        break
-                    edit_message(chat_id, placeholder_id, _DOT_FRAMES[frame % 3])
-                    frame += 1
-            except asyncio.CancelledError:
-                pass
+        # Prepare state and invoke graph
+        history  = fetch_last_10(discharge_id, db)
+        now_str  = datetime.now(TIMEZONE).strftime("%A, %d %b %Y, %I:%M %p IST")
+        initial_state: AgentState = {
+            "discharge_id":     discharge_id,
+            "user_msg":         text.strip(),
+            "current_datetime": now_str,
+            "chat_history":     history,
+            "intents":          [],
+            "pending_intents":  [],
+            "node_responses":   {},
+            "final_answer":     None,
+            "call_counts":      {},
+            "total_calls":      0,
+            "error":            None,
+        }
 
-        # Spawn animation as background task
-        animation_task = asyncio.create_task(_animate_async())
-
-        try:
-            history  = fetch_last_10(discharge_id, db)
-            now_str  = datetime.now(TIMEZONE).strftime("%A, %d %b %Y, %I:%M %p IST")
-            initial_state: AgentState = {
-                "discharge_id":     discharge_id,
-                "user_msg":         text.strip(),
-                "current_datetime": now_str,
-                "chat_history":     history,
-                "intents":          [],
-                "pending_intents":  [],
-                "node_responses":   {},
-                "final_answer":     None,
-                "call_counts":      {},
-                "total_calls":      0,
-                "error":            None,
-            }
-
-            graph  = build_agent_graph(discharge_id, db)
-            # Use ainvoke() for async execution — allows concurrent processing!
-            result: AgentState = await graph.ainvoke(initial_state)
-        finally:
-            # Signal animation to stop and wait for it to finish
-            _typing_stop.set()
-            try:
-                await asyncio.wait_for(animation_task, timeout=2)
-            except asyncio.TimeoutError:
-                logger.warning("Animation task timeout for chat=%s", chat_id)
-                animation_task.cancel()
+        graph  = build_agent_graph(discharge_id, db)
+        # Use ainvoke() for async execution — allows concurrent processing!
+        result: AgentState = await graph.ainvoke(initial_state)
 
         answer = result.get("final_answer") or (
             "I'm sorry, that's outside my scope. "
@@ -515,26 +467,16 @@ async def _handle_verified_async(db: Session, sess: TelegramSession, chat_id: st
         )
         save_turn(discharge_id, text, answer, db)
 
+        # Split and send response
         chunks = _split_message(answer)
-
-        if placeholder_id is not None:
-            # Replace the • bubble with the real answer in-place
-            if not edit_message(chat_id, placeholder_id, chunks[0]):
-                logger.warning("edit_message failed for chat=%s; answer may not have shown", chat_id)
-            for chunk in chunks[1:]:
-                send_message(chat_id, chunk)
-        else:
-            # Placeholder send failed — just send all chunks normally
-            for chunk in chunks:
-                send_message(chat_id, chunk)
+        for chunk in chunks:
+            send_message(chat_id, chunk)
 
     except Exception as exc:
         logger.error("LangGraph error for Telegram discharge %s: %s", discharge_id, exc, exc_info=True)
-        # Replace placeholder with error message so it never stays stuck
-        if placeholder_id is not None and not edit_message(chat_id, placeholder_id, _AGENT_ERROR):
-            send_message(chat_id, _AGENT_ERROR)
-        elif placeholder_id is None:
-            send_message(chat_id, _AGENT_ERROR)
+        send_message(chat_id, _AGENT_ERROR)
+
+
 
 
 def _split_message(text: str, limit: int = 4000) -> list[str]:
