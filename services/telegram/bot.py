@@ -409,7 +409,7 @@ async def _handle_verified_async(db: Session, sess: TelegramSession, chat_id: st
     """
     Async version of _handle_verified. Routes message to LangGraph agent asynchronously.
 
-    Uses Telegram's native typing indicator instead of animated placeholder.
+    Uses Telegram's native typing indicator with periodic refresh.
     Invokes graph with ainvoke() for non-blocking execution.
     """
     cmd = text.split()[0].lower().split("@")[0] if text else ""
@@ -438,28 +438,50 @@ async def _handle_verified_async(db: Session, sess: TelegramSession, chat_id: st
         from services.agent.state import AgentState
 
         # Show native Telegram "typing..." indicator in chat header
-        send_chat_action(chat_id, "typing")
+        # Keep refreshing it every 4 seconds while processing
+        typing_stop = asyncio.Event()
+        
+        async def keep_typing():
+            """Periodically refresh typing indicator while graph is processing."""
+            while not typing_stop.is_set():
+                send_chat_action(chat_id, "typing")
+                try:
+                    await asyncio.sleep(4)  # Refresh every 4 seconds (indicator lasts 5s)
+                except asyncio.CancelledError:
+                    break
+        
+        # Start typing indicator task
+        typing_task = asyncio.create_task(keep_typing())
 
-        # Prepare state and invoke graph
-        history  = fetch_last_10(discharge_id, db)
-        now_str  = datetime.now(TIMEZONE).strftime("%A, %d %b %Y, %I:%M %p IST")
-        initial_state: AgentState = {
-            "discharge_id":     discharge_id,
-            "user_msg":         text.strip(),
-            "current_datetime": now_str,
-            "chat_history":     history,
-            "intents":          [],
-            "pending_intents":  [],
-            "node_responses":   {},
-            "final_answer":     None,
-            "call_counts":      {},
-            "total_calls":      0,
-            "error":            None,
-        }
+        try:
+            # Prepare state and invoke graph
+            history  = fetch_last_10(discharge_id, db)
+            now_str  = datetime.now(TIMEZONE).strftime("%A, %d %b %Y, %I:%M %p IST")
+            initial_state: AgentState = {
+                "discharge_id":     discharge_id,
+                "user_msg":         text.strip(),
+                "current_datetime": now_str,
+                "chat_history":     history,
+                "intents":          [],
+                "pending_intents":  [],
+                "node_responses":   {},
+                "final_answer":     None,
+                "call_counts":      {},
+                "total_calls":      0,
+                "error":            None,
+            }
 
-        graph  = build_agent_graph(discharge_id, db)
-        # Use ainvoke() for async execution — allows concurrent processing!
-        result: AgentState = await graph.ainvoke(initial_state)
+            graph  = build_agent_graph(discharge_id, db)
+            # Use ainvoke() for async execution — allows concurrent processing!
+            result: AgentState = await graph.ainvoke(initial_state)
+        finally:
+            # Stop typing indicator
+            typing_stop.set()
+            typing_task.cancel()
+            try:
+                await asyncio.wait_for(typing_task, timeout=0.5)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
 
         answer = result.get("final_answer") or (
             "I'm sorry, that's outside my scope. "

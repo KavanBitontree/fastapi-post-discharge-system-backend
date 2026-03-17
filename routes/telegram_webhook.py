@@ -39,14 +39,23 @@ async def telegram_webhook(request: Request):
     Spawns handle_update_async as a background task and returns immediately.
     Includes deduplication to prevent processing the same update twice if Telegram retries.
     """
+    print("📨 [WEBHOOK] Received Telegram update")
+    
     # ── Verify secret token ───────────────────────────────────────────────
     expected = settings.TELEGRAM_WEBHOOK_SECRET
     if expected:
         incoming = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
         if incoming != expected:
+            print("❌ [WEBHOOK] Invalid secret token")
             raise HTTPException(status_code=403, detail="Invalid webhook token")
 
     update: dict = await request.json()
+    
+    print(f"📬 [WEBHOOK] Update ID: {update.get('update_id')}")
+    message = update.get("message") or update.get("edited_message")
+    if message:
+        text = message.get("text", "")
+        print(f"💬 [WEBHOOK] Message text: {text[:100]}")
 
     # ── Deduplication: prevent processing same update twice ───────────────
     # Telegram retries the same update_id if handler takes >30 seconds
@@ -54,15 +63,19 @@ async def telegram_webhook(request: Request):
     if update_id:
         if update_id in _PROCESSED_UPDATES:
             logger.info("Skipping duplicate update_id=%s (Telegram retry)", update_id)
+            print(f"⏭️ [WEBHOOK] Skipping duplicate update_id={update_id}")
             return {"ok": True}
         # Mark as processed
         _PROCESSED_UPDATES.append(update_id)
 
     try:
         # Spawn async task — don't wait, return 200 immediately to Telegram
+        print("🚀 [WEBHOOK] Spawning async handler")
         asyncio.create_task(handle_update_async(update))
     except Exception as exc:
         # Log spawn error but still return 200 to avoid Telegram retries
         logger.error("Webhook task spawn error: %s", exc, exc_info=True)
+        print(f"❌ [WEBHOOK] Error spawning task: {exc}")
 
+    print("✅ [WEBHOOK] Returning OK to Telegram")
     return {"ok": True}

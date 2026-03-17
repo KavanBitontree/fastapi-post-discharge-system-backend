@@ -203,7 +203,12 @@ def build_medicine_node(tools: list[BaseTool]) -> Callable[[AgentState], AgentSt
 
         responses = {**state["node_responses"], "medicine": final_text}
         pending   = [i for i in state["pending_intents"] if i != "medicine"]
+        
+        print(f"💊 [MEDICINE NODE] Done. Final response length: {len(final_text)} chars")
+        print(f"💊 [MEDICINE NODE] First 200 chars: {final_text[:200]}")
         logger.info("[medicine] Done. Pending: %s", pending)
+        logger.info("[medicine] Final response: %s", final_text[:200])
+        
         return {**state, "node_responses": responses, "pending_intents": pending}
 
     node.__name__ = "medicine_node"
