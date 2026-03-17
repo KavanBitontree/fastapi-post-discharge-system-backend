@@ -9,6 +9,7 @@ Unified extraction flow matching reports and prescriptions.
 from typing import Optional, List
 from datetime import date
 from decimal import Decimal
+import re
 
 from core.llm_init import llm
 from services.parsers.bill_parser import ParsedBill, BillData, BillDescriptionItem
@@ -163,9 +164,72 @@ Return a ValidatedBill with minimal header (invoice_number="Chunk {chunk_index +
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": prompt},
     ]
+
+    def _to_float(val: str) -> Optional[float]:
+        if not val:
+            return None
+        try:
+            cleaned = val.replace(",", "").replace("$", "").strip()
+            return float(cleaned)
+        except Exception:
+            return None
+
+    def _fallback_invoice_number(text: str) -> Optional[str]:
+        # Prefer explicit invoice labels when present.
+        patterns = [
+            r"(?i)invoice\s*(?:#|no\.?|number)?\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/]{4,})",
+            r"(?i)bill\s*(?:#|no\.?|number)?\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/]{4,})",
+            r"(?i)receipt\s*(?:#|no\.?|number)?\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/]{4,})",
+            r"(?i)\b(INV[-/ ]?\d{4}[-/ ]?\d{3,})\b",
+        ]
+        for pattern in patterns:
+            m = re.search(pattern, text)
+            if m:
+                return re.sub(r"\s+", "", m.group(1))
+        return None
+
+    def _fallback_total_amount(text: str) -> Optional[float]:
+        label_patterns = [
+            r"(?i)total\s*amount\s*due\s*[:\-]?\s*\$?\s*([0-9][0-9,]*\.?[0-9]{0,2})",
+            r"(?i)total\s*due\s*[:\-]?\s*\$?\s*([0-9][0-9,]*\.?[0-9]{0,2})",
+            r"(?i)balance\s*due\s*[:\-]?\s*\$?\s*([0-9][0-9,]*\.?[0-9]{0,2})",
+            r"(?i)grand\s*total\s*[:\-]?\s*\$?\s*([0-9][0-9,]*\.?[0-9]{0,2})",
+            r"(?i)amount\s*owed\s*[:\-]?\s*\$?\s*([0-9][0-9,]*\.?[0-9]{0,2})",
+        ]
+
+        for pattern in label_patterns:
+            m = re.search(pattern, text)
+            if m:
+                parsed = _to_float(m.group(1))
+                if parsed is not None:
+                    return parsed
+
+        # OCR can drop the final due value while preserving section subtotals.
+        subtotals = re.findall(r"(?i)section\s*[A-Z]\s*subtotal\s*[:\-]?\s*\$?\s*([0-9][0-9,]*\.?[0-9]{0,2})", text)
+        if len(subtotals) >= 2:
+            values = [_to_float(x) for x in subtotals]
+            values = [x for x in values if x is not None]
+            if values:
+                return float(round(sum(values), 2))
+
+        return None
     
     try:
         result = structured_llm.invoke(messages)
+
+        # Fallback for noisy OCR text: recover key header fields deterministically.
+        if chunk_index == 0:
+            if not result.bill.invoice_number:
+                fallback_inv = _fallback_invoice_number(text_chunk)
+                if fallback_inv:
+                    result.bill.invoice_number = fallback_inv
+                    print(f"[llm] Chunk {chunk_index + 1}: recovered invoice_number via regex")
+            if result.bill.total_amount is None:
+                fallback_total = _fallback_total_amount(text_chunk)
+                if fallback_total is not None:
+                    result.bill.total_amount = fallback_total
+                    print(f"[llm] Chunk {chunk_index + 1}: recovered total_amount via regex = {fallback_total}")
+
         print(f"[llm] Chunk {chunk_index + 1}: extracted {len(result.line_items)} line items")
         return result
     except Exception as e:
