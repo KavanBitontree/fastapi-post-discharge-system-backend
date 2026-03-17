@@ -81,6 +81,12 @@ def build_medicine_tools(discharge_id: int, db: Session) -> list:
         Get all active medications prescribed to the patient.
         Use when patient asks 'what medicines am I taking?' or 'my prescriptions'.
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        print(f"🔍 [MEDICINE TOOLS] Querying medications for discharge_id={discharge_id}")
+        logger.info(f"[medicine_tools] Querying medications for discharge_id={discharge_id}")
+        
         meds = (
             db.query(Medication)
             .options(
@@ -91,15 +97,24 @@ def build_medicine_tools(discharge_id: int, db: Session) -> list:
             .filter(Medication.discharge_id == discharge_id, Medication.is_active == True)
             .all()
         )
+        
+        print(f"✅ [MEDICINE TOOLS] Found {len(meds)} active medications")
+        logger.info(f"[medicine_tools] Found {len(meds)} active medications")
+        
         if not meds:
-            return "No active medications found."
+            result = "No active medications found."
+            print(f"⚠️ [MEDICINE TOOLS] Returning: {result}")
+            return result
 
         today = date.today()
         lines = ["Active medications:"]
         for m in meds:
             lines.append("")
             lines.append(_med_header(m, today))
-        return "\n".join(lines)
+        
+        result = "\n".join(lines)
+        print(f"📋 [MEDICINE TOOLS] Returning {len(lines)} lines of medication data")
+        return result
 
     @tool
     def get_medication_schedule() -> str:

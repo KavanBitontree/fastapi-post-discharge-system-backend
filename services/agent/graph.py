@@ -103,11 +103,17 @@ def build_agent_graph(discharge_id: int, db: Session) -> StateGraph:
     Called once per request — tools are bound to the
     discharge's DB session and discharge_id at build time.
     """
+    print(f"🏗️ [GRAPH] Building agent graph for discharge_id={discharge_id}")
+    logger.info(f"[graph] Building agent graph for discharge_id={discharge_id}")
+    
     # Build tools bound to this discharge + session
     report_tools   = build_report_tools(discharge_id, db)
     bill_tools     = build_bill_tools(discharge_id, db)
     medicine_tools = build_medicine_tools(discharge_id, db)
     doctor_tools   = build_doctor_tools(discharge_id, db)
+
+    print(f"🔧 [GRAPH] Built {len(medicine_tools)} medicine tools")
+    logger.info(f"[graph] Built {len(medicine_tools)} medicine tools")
 
     # Build specialist node functions
     reports_node  = build_reports_node(report_tools)
