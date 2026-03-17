@@ -305,6 +305,7 @@ def supervisor_router(state: AgentState) -> AgentState:
         logger.error("Supervisor routing failed: %s", e, exc_info=True)
         intents = ["end"]
 
+    print(f"🎯 [SUPERVISOR] Routed to: {intents}")
     logger.info("Supervisor routed → %s", intents)
     return {**state, "intents": intents, "pending_intents": list(intents)}
 
