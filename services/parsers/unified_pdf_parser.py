@@ -22,7 +22,7 @@ from services.pii_redaction import redact_pii_from_text
 # Type variable for generic return types
 T = TypeVar('T')
 
-LOCAL_OCR_EXTRACT_URL = "http://127.0.0.1:8005/ocr/extract"
+LOCAL_OCR_EXTRACT_URL = "https://kavan7377-ocr-microservice.hf.space/ocr/extract"
 
 
 def _is_development_env() -> bool:

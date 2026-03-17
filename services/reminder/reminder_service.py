@@ -45,7 +45,7 @@ MEAL_SLOTS: list[tuple[str, str, int]] = [
     ("after_breakfast",  "After Breakfast", 8),
     ("before_lunch",     "Before Lunch", 11),
     ("after_lunch",      "After Lunch", 13),
-    ("before_dinner",    "Before Dinner", 18),
+    ("before_dinner",    "Before Dinner", 19),
     ("after_dinner",     "After Dinner", 21),
 ]
 
@@ -165,6 +165,36 @@ def _is_due_now(schedule: MedicationSchedule, slot: str, now: datetime) -> bool:
         nna = nna.replace(tzinfo=TIMEZONE)
 
     return now >= nna
+
+
+def _match_slot_within_window(
+    schedule: MedicationSchedule,
+    now: datetime,
+    window: timedelta,
+    not_before: Optional[datetime] = None,
+) -> tuple[Optional[str], Optional[datetime]]:
+    """
+    Find an active slot for today whose scheduled time is within the current
+    delivery window. If `not_before` is provided, only consider slots strictly
+    after that timestamp.
+    """
+    matched_slot: Optional[str] = None
+    matched_time: Optional[datetime] = None
+
+    for flag, _, hour in MEAL_SLOTS:
+        if not getattr(schedule, flag, False):
+            continue
+
+        slot_time = datetime(now.year, now.month, now.day, hour, 0, tzinfo=TIMEZONE)
+
+        if not_before and slot_time <= not_before:
+            continue
+
+        if slot_time <= now <= slot_time + window:
+            matched_slot = flag
+            matched_time = slot_time
+
+    return matched_slot, matched_time
 
 
 # ─── Telegram message builder ────────────────────────────────────────────────
@@ -508,15 +538,8 @@ def run_all_due_reminders(db: Session, window_minutes: int = 20) -> dict:
                 continue
 
             if sched.next_notify_at is None:
-                # Never sent before — find if now falls within any active slot window.
-                matched_slot = None
-                for flag, _, s_hour in MEAL_SLOTS:
-                    if not getattr(sched, flag, False):
-                        continue
-                    slot_time = datetime(now.year, now.month, now.day, s_hour, 0, tzinfo=TIMEZONE)
-                    if slot_time <= now <= slot_time + window:
-                        matched_slot = flag
-                        break
+                # Never sent before — send only if now is inside an active slot window.
+                matched_slot, _ = _match_slot_within_window(sched, now, window)
                 if matched_slot:
                     due.append({"medication": med, "slot": matched_slot})
                 else:
@@ -532,6 +555,24 @@ def run_all_due_reminders(db: Session, window_minutes: int = 20) -> dict:
 
             # Window check: due in the past ≤ window_minutes ago
             if not (nna <= now <= nna + window):
+                # Allow current-slot recovery when a prior slot was missed and stale.
+                if now > nna + window:
+                    matched_slot, matched_time = _match_slot_within_window(
+                        sched,
+                        now,
+                        window,
+                        not_before=nna,
+                    )
+                    if matched_slot:
+                        logger.info(
+                            "med id=%s '%s' recovered from stale next_notify_at=%s using slot=%s at %s",
+                            med.id,
+                            med.drug_name,
+                            nna.isoformat(),
+                            matched_slot,
+                            matched_time.isoformat() if matched_time else "unknown",
+                        )
+                        due.append({"medication": med, "slot": matched_slot})
                 continue
 
             # Map notify hour → slot flag
