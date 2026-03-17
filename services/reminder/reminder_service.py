@@ -39,18 +39,18 @@ logger = logging.getLogger(__name__)
 
 TIMEZONE = ZoneInfo("Asia/Kolkata")
 
-# (schedule_column_flag, display_label, cron_hour, cron_minute)
-MEAL_SLOTS: list[tuple[str, str, int, int]] = [
-    ("before_breakfast", "Before Breakfast", 7,  0),
-    ("after_breakfast",  "After Breakfast",  8,  0),
-    ("before_lunch",     "Before Lunch",     11, 0),
-    ("after_lunch",      "After Lunch",      13, 0),
-    ("before_dinner",    "Before Dinner",    18, 0),
-    ("after_dinner",     "After Dinner",     21, 0),
+# (schedule_column_flag, display_label, cron_hour)
+MEAL_SLOTS: list[tuple[str, str, int]] = [
+    ("before_breakfast", "Before Breakfast", 7),
+    ("after_breakfast",  "After Breakfast", 8),
+    ("before_lunch",     "Before Lunch", 11),
+    ("after_lunch",      "After Lunch", 13),
+    ("before_dinner",    "Before Dinner", 18),
+    ("after_dinner",     "After Dinner", 21),
 ]
 
-SLOT_LABELS: dict[str, str] = {f: l for f, l, _, _ in MEAL_SLOTS}
-SLOT_ORDER:  list[str]      = [f for f, _, _, _ in MEAL_SLOTS]
+SLOT_LABELS: dict[str, str] = {f: l for f, l, _ in MEAL_SLOTS}
+SLOT_ORDER:  list[str]      = [f for f, _, _ in MEAL_SLOTS]
 
 FORM_EMOJI: dict[str, str] = {
     MedicineForm.TABLET:    "💊",
@@ -127,18 +127,18 @@ def _compute_next_notify_at(schedule: MedicationSchedule, after: datetime) -> Op
     tomorrow = today + timedelta(days=1)
 
     # Check remaining slots today
-    for flag, _, hour, minute in MEAL_SLOTS:
+    for flag, _, hour in MEAL_SLOTS:
         if not getattr(schedule, flag, False):
             continue
-        candidate = datetime(today.year, today.month, today.day, hour, minute, tzinfo=TIMEZONE)
+        candidate = datetime(today.year, today.month, today.day, hour, 0, tzinfo=TIMEZONE)
         if candidate > after:
             return candidate
 
     # Wrap to tomorrow — find first active slot
-    for flag, _, hour, minute in MEAL_SLOTS:
+    for flag, _, hour in MEAL_SLOTS:
         if not getattr(schedule, flag, False):
             continue
-        return datetime(tomorrow.year, tomorrow.month, tomorrow.day, hour, minute, tzinfo=TIMEZONE)
+        return datetime(tomorrow.year, tomorrow.month, tomorrow.day, hour, 0, tzinfo=TIMEZONE)
 
     # No slots set at all (e.g. Rosuvastatin with all false)
     return None
@@ -298,7 +298,7 @@ def collect_due_medications(
         # Gate 3: is this slot active AND is it time to send?
         if not _is_due_now(sched, slot, now):
             # Log specifically if ALL flags are false (data issue like Rosuvastatin id=53)
-            if not any(getattr(sched, f, False) for f, _, _, _ in MEAL_SLOTS):
+            if not any(getattr(sched, f, False) for f, _, _ in MEAL_SLOTS):
                 logger.warning(
                     "med id=%s '%s' has ALL schedule flags=false — will never be reminded!",
                     med.id, med.drug_name
@@ -463,8 +463,8 @@ def run_all_due_reminders(db: Session, window_minutes: int = 20) -> dict:
         .all()
     )
 
-    # (hour, minute) → schedule flag, e.g. (21, 0) → "after_dinner"
-    hour_to_flag: dict[tuple[int, int], str] = {(hour, minute): flag for flag, _, hour, minute in MEAL_SLOTS}
+    # hour → schedule flag, e.g. 21 → "after_dinner"
+    hour_to_flag: dict[int, str] = {hour: flag for flag, _, hour in MEAL_SLOTS}
 
     sent_count = 0
     skip_count = 0
@@ -510,10 +510,10 @@ def run_all_due_reminders(db: Session, window_minutes: int = 20) -> dict:
             if sched.next_notify_at is None:
                 # Never sent before — find if now falls within any active slot window.
                 matched_slot = None
-                for flag, _, s_hour, s_minute in MEAL_SLOTS:
+                for flag, _, s_hour in MEAL_SLOTS:
                     if not getattr(sched, flag, False):
                         continue
-                    slot_time = datetime(now.year, now.month, now.day, s_hour, s_minute, tzinfo=TIMEZONE)
+                    slot_time = datetime(now.year, now.month, now.day, s_hour, 0, tzinfo=TIMEZONE)
                     if slot_time <= now <= slot_time + window:
                         matched_slot = flag
                         break
@@ -534,12 +534,12 @@ def run_all_due_reminders(db: Session, window_minutes: int = 20) -> dict:
             if not (nna <= now <= nna + window):
                 continue
 
-            # Map notify (hour, minute) → slot flag
-            slot = hour_to_flag.get((nna.hour, nna.minute))
+            # Map notify hour → slot flag
+            slot = hour_to_flag.get(nna.hour)
             if not slot:
                 logger.warning(
-                    "med id=%s: next_notify_at %02d:%02d doesn't match any slot",
-                    med.id, nna.hour, nna.minute,
+                    "med id=%s: next_notify_at hour %02d doesn't match any slot",
+                    med.id, nna.hour,
                 )
                 continue
 

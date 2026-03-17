@@ -34,6 +34,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPExcepti
 from sqlalchemy.orm import Session
 
 from core.database import get_db
+from core.security import require_admin
 from models.discharge_history import DischargeHistory
 from models.patient import Patient
 from services.discharge_service import DischargeResult, FileJob, run_discharge_queue, run_discharge_queue_in_background
@@ -119,12 +120,6 @@ async def _read_jobs(
 
 
 def _result_to_error_detail(result: DischargeResult) -> dict:
-    _ERROR_TITLES = {
-        "no_data":     "Wrong or empty document",
-        "duplicate":   "Duplicate document",
-        "parse_error": "Document parsing failed",
-        "infra_error": "Temporary service error",
-    }
     return {
         "message": (
             "Processing stopped at a failed file. "
@@ -133,9 +128,6 @@ def _result_to_error_detail(result: DischargeResult) -> dict:
         ),
         "discharge_id": result.discharge_id,
         "status": result.status,
-        "error_type":  result.error_type,
-        "error_title": _ERROR_TITLES.get(result.error_type or "", "Processing error"),
-        "error":       result.error,
         "progress": {
             "processed_reports":       result.processed_reports,
             "processed_bills":         result.processed_bills,
@@ -145,6 +137,7 @@ def _result_to_error_detail(result: DischargeResult) -> dict:
             "type":  result.failed_at_type,
             "index": result.failed_at_index,
         },
+        "error": result.error,
     }
 
 
@@ -166,6 +159,7 @@ async def process_discharge(
     Returns 202 Accepted immediately with the discharge_id so the frontend
     can start polling GET /api/discharge/{id}/status for live progress.
     The queue processes: reports → bills → prescriptions (in order).
+    Prescription PDFs are processed in-memory and not stored in Cloudinary.
     Each file is committed individually — if one fails, previous ones are kept.
     """
     # ── Validate inputs ───────────────────────────────────────────────────────
@@ -301,15 +295,7 @@ def get_discharge_status(discharge_id: int, db: Session = Depends(get_db)):
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Discharge id={discharge_id} not found.",
         )
-
-    _ERROR_TITLES = {
-        "no_data":     "Wrong or empty document",
-        "duplicate":   "Duplicate document",
-        "parse_error": "Document parsing failed",
-        "infra_error": "Temporary service error",
-    }
-
-    resp: dict = {
+    return {
         "discharge_id":   discharge.id,
         "patient_id":     discharge.patient_id,
         "discharge_date": discharge.discharge_date,
@@ -364,3 +350,33 @@ def get_patient_latest_discharge_pdfs(patient_id: int, db: Session = Depends(get
     Returns 404 if no discharge record is found for the patient or no PDFs exist yet.
     """
     return DischargePdfController.get_pdfs_by_patient(db, patient_id)
+
+
+# ── DELETE /api/discharge/{discharge_id} (admin only) ───────────────────────
+
+@router.delete("/{discharge_id}")
+def delete_discharge_history(
+    discharge_id: int,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(require_admin),
+):
+    """
+    Permanently delete a discharge history record and all related rows.
+
+    Cascade cleanup is handled by configured ORM/DB relationships.
+    This route is restricted to admin users only.
+    """
+    discharge = db.query(DischargeHistory).filter(DischargeHistory.id == discharge_id).first()
+    if not discharge:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Discharge id={discharge_id} not found.",
+        )
+
+    db.delete(discharge)
+    db.commit()
+
+    return {
+        "discharge_id": discharge_id,
+        "message": "Discharge history deleted successfully.",
+    }
