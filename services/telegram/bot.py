@@ -33,30 +33,26 @@ Verification flow
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
-import threading
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-
 from sqlalchemy.orm import Session
 
-from core.database import SessionLocal
 from core.enums import SessionStatus
 from models.discharge_history import DischargeHistory
 from models.patient import Patient
 from models.telegram_session import TelegramSession
 from services.telegram.otp import generate_otp, send_otp_sms
 from services.telegram.sender import send_message, send_placeholder, edit_message, set_my_commands
+from core.database import SessionLocal
 
 logger = logging.getLogger(__name__)
 
-TIMEZONE           = ZoneInfo("Asia/Kolkata")
+TIMEZONE = ZoneInfo("Asia/Kolkata")
+MAX_ATTEMPTS = 3
 OTP_EXPIRY_MINUTES = 5
-MAX_ATTEMPTS       = 3
-
-# ── Bot reply templates (HTML) ────────────────────────────────────────────────
-
 _WELCOME = (
     "👋 Welcome to <b>Medicare Bot</b>!\n\n"
     "I can help you with:\n"
@@ -375,20 +371,7 @@ def _handle_verified(db: Session, sess: TelegramSession, chat_id: str, text: str
 
         # Show animated thinking dots in the placeholder bubble (•  →  ••  →  •••)
         placeholder_id = send_placeholder(chat_id, "•")
-        _typing_stop = threading.Event()
         _DOT_FRAMES = ("•", "••", "•••")
-
-        def _animate():
-            frame = 1  # placeholder already shows frame 0 ("•")
-            while not _typing_stop.is_set():
-                _typing_stop.wait(0.7)  # ≤1 edit/s keeps us under Telegram's rate limit
-                if _typing_stop.is_set():
-                    break
-                edit_message(chat_id, placeholder_id, _DOT_FRAMES[frame % 3])
-                frame += 1
-
-        typing_thread = threading.Thread(target=_animate, daemon=True)
-        typing_thread.start()
 
         try:
             history  = fetch_last_10(discharge_id, db)
@@ -410,8 +393,121 @@ def _handle_verified(db: Session, sess: TelegramSession, chat_id: str, text: str
             graph  = build_agent_graph(discharge_id, db)
             result: AgentState = graph.invoke(initial_state)
         finally:
+            pass
+
+        answer = result.get("final_answer") or (
+            "I'm sorry, that's outside my scope. "
+            "I can help with reports, bills, medications, and doctors."
+        )
+        save_turn(discharge_id, text, answer, db)
+
+        chunks = _split_message(answer)
+
+        if placeholder_id is not None:
+            # Replace the • bubble with the real answer in-place
+            if not edit_message(chat_id, placeholder_id, chunks[0]):
+                logger.warning("edit_message failed for chat=%s; answer may not have shown", chat_id)
+            for chunk in chunks[1:]:
+                send_message(chat_id, chunk)
+        else:
+            # Placeholder send failed — just send all chunks normally
+            for chunk in chunks:
+                send_message(chat_id, chunk)
+
+    except Exception as exc:
+        logger.error("LangGraph error for Telegram discharge %s: %s", discharge_id, exc, exc_info=True)
+        # Replace placeholder with error message so it never stays stuck
+        if placeholder_id is not None and not edit_message(chat_id, placeholder_id, _AGENT_ERROR):
+            send_message(chat_id, _AGENT_ERROR)
+        elif placeholder_id is None:
+            send_message(chat_id, _AGENT_ERROR)
+
+
+async def _handle_verified_async(db: Session, sess: TelegramSession, chat_id: str, text: str) -> None:
+    """
+    Async version of _handle_verified. Routes message to LangGraph agent asynchronously.
+    
+    Uses asyncio-based animation instead of threading.
+    Invokes graph with ainvoke() for non-blocking execution.
+    """
+    cmd = text.split()[0].lower().split("@")[0] if text else ""
+
+    if cmd in ("/start", "/help"):
+        discharge = db.query(DischargeHistory).filter(DischargeHistory.id == sess.discharge_id).first()
+        name = discharge.patient.full_name if discharge and discharge.patient else "Patient"
+        send_message(chat_id, _ALREADY_VERIFIED.format(name=name) if cmd == "/start" else _HELP)
+        return
+
+    discharge_id = sess.discharge_id
+    if not discharge_id:
+        send_message(
+            chat_id,
+            "📋 It looks like you don't have any discharge history in our records yet.\n\n"
+            "Without a discharge on file, I won't have any reports, bills, or medication "
+            "data to share with you.\n\n"
+            "If you believe this is a mistake, please contact the hospital for assistance.",
+        )
+        return
+
+    placeholder_id: int | None = None
+    try:
+        # Import here to avoid circular imports at module load time
+        from services.agent.graph import build_agent_graph
+        from services.agent.chat_history_service import fetch_last_10, save_turn
+        from services.agent.state import AgentState
+
+        # Show animated thinking dots in the placeholder bubble (•  →  ••  →  •••)
+        placeholder_id = send_placeholder(chat_id, "•")
+        _typing_stop = asyncio.Event()
+        _DOT_FRAMES = ("•", "••", "•••")
+
+        async def _animate_async():
+            """Async animation task — updates placeholder with rotating dots."""
+            frame = 1  # placeholder already shows frame 0 ("•")
+            try:
+                while not _typing_stop.is_set():
+                    try:
+                        await asyncio.sleep(0.7)  # ≤1 edit/s keeps us under Telegram's rate limit
+                    except asyncio.CancelledError:
+                        break
+                    if _typing_stop.is_set():
+                        break
+                    edit_message(chat_id, placeholder_id, _DOT_FRAMES[frame % 3])
+                    frame += 1
+            except asyncio.CancelledError:
+                pass
+
+        # Spawn animation as background task
+        animation_task = asyncio.create_task(_animate_async())
+
+        try:
+            history  = fetch_last_10(discharge_id, db)
+            now_str  = datetime.now(TIMEZONE).strftime("%A, %d %b %Y, %I:%M %p IST")
+            initial_state: AgentState = {
+                "discharge_id":     discharge_id,
+                "user_msg":         text.strip(),
+                "current_datetime": now_str,
+                "chat_history":     history,
+                "intents":          [],
+                "pending_intents":  [],
+                "node_responses":   {},
+                "final_answer":     None,
+                "call_counts":      {},
+                "total_calls":      0,
+                "error":            None,
+            }
+
+            graph  = build_agent_graph(discharge_id, db)
+            # Use ainvoke() for async execution — allows concurrent processing!
+            result: AgentState = await graph.ainvoke(initial_state)
+        finally:
+            # Signal animation to stop and wait for it to finish
             _typing_stop.set()
-            typing_thread.join(timeout=2)  # wait for any in-flight edit to finish
+            try:
+                await asyncio.wait_for(animation_task, timeout=2)
+            except asyncio.TimeoutError:
+                logger.warning("Animation task timeout for chat=%s", chat_id)
+                animation_task.cancel()
 
         answer = result.get("final_answer") or (
             "I'm sorry, that's outside my scope. "
@@ -503,5 +599,59 @@ def handle_update(update: dict) -> None:
     finally:
         db.close()
 
+
+# ── Async dispatcher (for concurrent multi-user processing) ──────────────────
+
+async def handle_update_async(update: dict) -> None:
+    """
+    Async version of handle_update. Processes one Telegram Update object.
+    Spawned as background task from webhook — allows concurrent processing.
+    
+    OTP verification states handled synchronously (fast).
+    VERIFIED state routes to async _handle_verified_async for LangGraph processing.
+    """
+    message = update.get("message") or update.get("edited_message")
+    if not message:
+        return
+
+    chat_id = str(message["chat"]["id"])
+    text    = (message.get("text") or "").strip()
+    if not text:
+        send_message(
+            chat_id,
+            "🤖 I can only understand <b>text messages</b>.\n\n"
+            "Please type your question and I'll be happy to help!",
+        )
+        return
+
+    db: Session = SessionLocal()
+    try:
+        sess, is_new = _get_or_create_session(db, chat_id)
+
+        if is_new:
+            # Brand-new user — welcome message already covers asking for number
+            send_message(chat_id, _WELCOME)
+            return
+
+        status = sess.session_status
+        if status == SessionStatus.AWAIT_MOBILE:
+            _handle_await_mobile(db, sess, chat_id, text)
+        elif status == SessionStatus.AWAIT_OTP:
+            _handle_await_otp(db, sess, chat_id, text)
+        elif status == SessionStatus.VERIFIED:
+            # Call async version for concurrent LangGraph processing
+            await _handle_verified_async(db, sess, chat_id, text)
+        else:
+            logger.warning("Unknown session status '%s' for chat_id=%s", status, chat_id)
+            send_message(chat_id, _ASK_MOBILE)
+
+    except Exception as exc:
+        logger.error("handle_update_async error chat_id=%s: %s", chat_id, exc, exc_info=True)
+        try:
+            send_message(chat_id, "⚠️ Something went wrong. Please try again.")
+        except Exception:
+            pass
+    finally:
+        db.close()
 
 
