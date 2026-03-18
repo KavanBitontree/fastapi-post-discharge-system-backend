@@ -35,3 +35,30 @@ class ValidatedReport(BaseModel):
     """Complete validated medical report."""
     header: ReportHeader
     test_results: List[TestResult]
+
+
+class TestResultItem(BaseModel):
+    """Individual test result in the summary response."""
+    test_name: str
+    section: Optional[str] = None
+    result: Optional[str] = None
+    units: Optional[str] = None
+    flag: Optional[str] = None
+    flag_source: Optional[str] = None  # "column" | "computed" | null
+    reference_range_low: Optional[str] = None
+    reference_range_high: Optional[str] = None
+
+
+class ReportSummaryItem(BaseModel):
+    """Summary of a single report with its test results."""
+    report_id: int
+    report_name: str
+    report_date: Optional[str] = None
+    specimen_type: Optional[str] = None
+    tests: List[TestResultItem]
+
+
+class ReportSummaryResponse(BaseModel):
+    """Response containing all reports for a discharge."""
+    discharge_id: int
+    reports: List[ReportSummaryItem]
