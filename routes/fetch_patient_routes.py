@@ -29,3 +29,13 @@ def get_patient_detail(
 ):
     """Admin Only: Get specific patient profile"""
     return FetchPatientController.get_details(db, patient_id)
+
+
+@router.patch("/{patient_id}/admit")
+def admit_patient(
+    patient_id: int,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(require_admin),
+):
+    """Admin Only: Mark a patient as active for a new discharge cycle."""
+    return FetchPatientController.admit_patient(db, patient_id)

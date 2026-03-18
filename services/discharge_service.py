@@ -23,6 +23,7 @@ from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session
 
 from models.discharge_history import DischargeHistory
+from models.patient import Patient
 
 logger = logging.getLogger(__name__)
 
@@ -421,6 +422,9 @@ def run_discharge_queue(
     # ── All jobs completed ────────────────────────────────────────────────────
     discharge.discharge_date = date.today()
     discharge.status = "completed"
+    patient = db.query(Patient).filter(Patient.id == discharge.patient_id).first()
+    if patient:
+        patient.is_discharged = True
     db.commit()
 
     logger.info(
