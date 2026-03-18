@@ -1,4 +1,4 @@
-from fastapi import HTTPException, status, Response
+from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 from services.register_service import RegisterService
 from core.security import create_tokens, hash_token # Ensure hash_token is imported
@@ -8,7 +8,7 @@ from core.enums import DeviceType
 
 class RegisterController:
     @staticmethod
-    def process_registration(db: Session, data, response: Response):
+    def process_registration(db: Session, data):
 
         existing_user = RegisterService.get_patient_by_email(db, data.email)
         if existing_user:
@@ -21,15 +21,6 @@ class RegisterController:
         
         access_token, refresh_token, expires_at= create_tokens(email=new_patient.email,pid=new_patient.id)
         
-        response.set_cookie(
-            key="access_token",
-            value=access_token,
-            httponly=True,
-            samesite="none",
-            secure=True,
-            path="/",
-            max_age=900
-        )
         db_refresh_token = RefreshToken(
             patient_id=new_patient.id,
             refresh_token_hashed=hash_token(refresh_token), 
@@ -44,5 +35,7 @@ class RegisterController:
             "id": new_patient.id,
             "full_name": new_patient.full_name,
             "email": new_patient.email,
-            "refresh_token": refresh_token
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer"
         }

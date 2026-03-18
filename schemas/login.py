@@ -12,7 +12,18 @@ class RefreshRequest(BaseModel):
 class LogoutRequest(BaseModel):
     refresh_token: str
 
-# 3. Response Schema: This is what the backend sends back after login.
+# 3. Response Schemas
+class LoginResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    is_admin: bool
+    token_type: str = "bearer"
+
+class RefreshResponse(BaseModel):
+    access_token: str
+    message: str
+    token_type: str = "bearer"
+
 class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str

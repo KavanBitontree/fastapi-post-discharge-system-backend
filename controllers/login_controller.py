@@ -1,6 +1,6 @@
 from urllib import response
 
-from fastapi import HTTPException, status, Response
+from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 from services.login_service import LoginService
 from core.security import create_tokens, decode_token, hash_token, create_access_token
@@ -13,7 +13,7 @@ ADMIN_PASS = "Admin@123"
 
 class LoginController:
     @staticmethod
-    def process_login(db: Session, login_data, device_type: str, response: Response):
+    def process_login(db: Session, login_data, device_type: str):
 
         if login_data.email == ADMIN_EMAIL and login_data.password == ADMIN_PASS:
             access_token, refresh_token = LoginService.handle_admin_login(db, device_type)
@@ -28,20 +28,15 @@ class LoginController:
             access_token, refresh_token = LoginService.handle_single_device_login(db, patient, device_type)
             is_admin = False
 
-        response.set_cookie(
-            key="access_token",
-            value=access_token,
-            httponly=True,
-            samesite="none",
-            secure=True,
-            path="/",
-            max_age=900
-        )
-        
-        return {"refresh_token": refresh_token, "is_admin": is_admin}
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token, 
+            "is_admin": is_admin,
+            "token_type": "bearer"
+        }
     
     @staticmethod
-    def process_refresh(db: Session, refresh_token: str, response: Response):
+    def process_refresh(db: Session, refresh_token: str):
 
         payload = decode_token(refresh_token)
         if not payload or payload.get("type") != "refresh":
@@ -61,13 +56,8 @@ class LoginController:
         # Only generate a new access token, keep it linked to the existing 'hashed' DB row
         access_token = create_access_token(payload.get("sub"), payload.get("pid"), hashed)
 
-        response.set_cookie(
-            key="access_token",
-            value=access_token,
-            httponly=True,
-            samesite="none",
-            secure=True,
-            path="/",
-            max_age=900 
-        )
-        return {"message": "Token refreshed"}
+        return {
+            "access_token": access_token,
+            "message": "Token refreshed",
+            "token_type": "bearer"
+        }

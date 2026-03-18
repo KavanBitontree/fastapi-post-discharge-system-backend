@@ -5,12 +5,12 @@ from sqlalchemy.orm import Session
 from core.config import settings
 import hashlib
 from fastapi import Depends, Request, HTTPException, status
-from fastapi.security import APIKeyCookie
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from models.refresh_token import RefreshToken
 from core.database import get_db
 
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
-cookie_scheme = APIKeyCookie(name="access_token", auto_error=False)
+bearer_scheme = HTTPBearer(auto_error=False)
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
@@ -80,8 +80,18 @@ from jose import jwt, JWTError
 from sqlalchemy.orm import Session
 # Ensure your imports match your file structure
 
-def get_current_user(request: Request, token: str = Depends(cookie_scheme), db: Session = Depends(get_db)):
-    token = token or request.cookies.get("access_token")
+def get_current_user(request: Request, credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme), db: Session = Depends(get_db)):
+    token = None
+    
+    # Try to get token from Authorization header first
+    if credentials:
+        token = credentials.credentials
+    
+    # Fallback to Authorization header manually if bearer_scheme fails
+    if not token:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
     
     if not token:
         raise HTTPException(

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from core.database import get_db
 from controllers.logout_controller import LogoutController
@@ -9,11 +9,10 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 @router.post("/logout")
 def logout(
-    response: Response, 
     data: LogoutRequest,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    """Endpoint to revoke session and clear cookies"""
+    """Endpoint to revoke session - frontend should clear localStorage"""
     token = data.refresh_token
-    return LogoutController.execute_logout(db, token, response)
+    return LogoutController.execute_logout(db, token)

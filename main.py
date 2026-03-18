@@ -13,7 +13,6 @@ from sqlalchemy import text
 
 from core.database import engine
 from core.config import settings
-from core.security import cookie_scheme 
 from core.config import settings  # noqa: F401 — also sets LangSmith os.environ vars
 import models  # noqa: F401 — registers all mappers (including TelegramSession) on startup
 from services.telegram.sender import set_webhook, set_my_commands
