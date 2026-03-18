@@ -160,15 +160,51 @@ _HELP = (
 _PHONE_RE = re.compile(r'^\+?\d[\d\s\-]{6,}\d$')
 
 
-def _extract_phone(text: str) -> str | None:
+def extract_phone_number(text: str) -> str | None:
     """
-    Return the phone string (+ kept, spaces/dashes stripped) if it looks like
-    a phone number, otherwise None.
+    Extract a 10-digit Indian mobile number from a natural language message.
+    Handles: 'my number is 9999999012', '+91 9999999012', '91-9999999012', etc.
+    Returns only the 10-digit number without country code.
     """
-    cleaned = text.strip()
-    if not _PHONE_RE.match(cleaned):
+    if not text:
         return None
-    return re.sub(r'[\s\-]', '', cleaned)
+    
+    # Remove common noise words
+    cleaned = text.strip()
+    
+    # Match +91 or 91 prefix optionally, then 10 digits
+    # Pattern: optional country code, then exactly 10 digits starting with 6-9
+    pattern = r'(?:(?:\+91|91)[\s\-]?)?([6-9]\d{9})'
+    match = re.search(pattern, cleaned)
+    
+    if match:
+        return match.group(1)  # Return only the 10-digit number, no country code
+    
+    return None
+
+
+def extract_otp(text: str, otp_length: int = 6) -> str | None:
+    """
+    Extract an OTP (4-8 digit code) from a natural language message.
+    Handles: 'my OTP is : 7989234', 'otp is 7989234', '7989234 is my otp'
+    """
+    if not text:
+        return None
+    
+    # Find all digit sequences of length 4-8
+    matches = re.findall(r'\b(\d{4,8})\b', text)
+    
+    if not matches:
+        return None
+    
+    # If specific length expected, filter by that length
+    if otp_length:
+        filtered = [m for m in matches if len(m) == otp_length]
+        if filtered:
+            return filtered[0]
+    
+    # Otherwise return the first digit sequence found
+    return matches[0]
 
 
 def _digits_only(s: str) -> str:
@@ -187,12 +223,6 @@ def _phone_matches(stored: str | None, user_input: str) -> bool:
     if len(sd) >= 10 and len(ud) >= 10:
         return sd[-10:] == ud[-10:]
     return sd == ud  # fallback: exact digit match
-
-
-def _extract_otp(text: str) -> str | None:
-    """Find the first standalone 6-digit sequence in the text."""
-    m = re.search(r'\b(\d{6})\b', text.strip())
-    return m.group(1) if m else None
 
 
 # ── Session helpers ───────────────────────────────────────────────────────────
@@ -251,9 +281,15 @@ def _handle_await_mobile(db: Session, sess: TelegramSession, chat_id: str, text:
         send_message(chat_id, _HELP if cmd == "/help" else _WELCOME)
         return
 
-    phone = _extract_phone(text)
+    # Extract phone number from natural language input
+    phone = extract_phone_number(text)
     if not phone:
-        send_message(chat_id, _INVALID_MOBILE)
+        send_message(
+            chat_id,
+            "❌ Sorry, I couldn't find a valid 10-digit mobile number in your message.\n\n"
+            "Please send your number, e.g.:\n"
+            "<code>9999999012</code> or <code>+919999999012</code>"
+        )
         return
 
     # Lookup patient by phone (last-10-digit normalisation)
@@ -299,9 +335,16 @@ def _handle_await_otp(db: Session, sess: TelegramSession, chat_id: str, text: st
         send_message(chat_id, _IN_VERIFICATION)
         return
 
-    otp = _extract_otp(text)
+    # Extract OTP from natural language input
+    otp = extract_otp(text)
     if not otp:
-        send_message(chat_id, _INVALID_OTP_FORMAT)
+        send_message(
+            chat_id,
+            "⚠️ Sorry, I couldn't find an OTP in your message.\n\n"
+            "Please send just the OTP, e.g.:\n"
+            "<code>123456</code>\n\n"
+            "If you want to resend the OTP, type /resend."
+        )
         return
 
     # Expiry check
