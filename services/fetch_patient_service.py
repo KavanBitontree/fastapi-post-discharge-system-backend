@@ -6,6 +6,22 @@ from sqlalchemy import func, or_, asc, desc
 
 class FetchPatientService:
     @staticmethod
+    def admit_patient(db: Session, patient_id: int):
+        patient = db.query(Patient).filter(Patient.id == patient_id).first()
+        if not patient:
+            return None
+
+        patient.is_discharged = False
+        db.commit()
+        db.refresh(patient)
+
+        return {
+            "id": patient.id,
+            "full_name": patient.full_name,
+            "is_discharged": patient.is_discharged,
+        }
+
+    @staticmethod
     def get_filtered_patients(
         db: Session,
         search: str = None,
@@ -57,9 +73,12 @@ class FetchPatientService:
                     "gender": p.gender,
                     "address": p.address,
                     "is_active": p.is_active,
+                    "is_discharged": p.is_discharged,
                     "discharge_date": (
                         str(latest_discharge.discharge_date)
-                        if latest_discharge and latest_discharge.discharge_date
+                        if p.is_discharged
+                        and latest_discharge
+                        and latest_discharge.discharge_date
                         else None
                     ),
                 }
@@ -69,7 +88,7 @@ class FetchPatientService:
     
     @staticmethod
     def get_patient_by_id(db: Session, patient_id: int):
-        """Fetches a single patient by their ID, including latest discharge_date"""
+        """Fetches a single patient by ID, including lifecycle-aware discharge metadata."""
         patient = db.query(Patient).filter(Patient.id == patient_id).first()
         if not patient:
             return None
@@ -82,6 +101,13 @@ class FetchPatientService:
             .order_by(desc(DischargeHistory.discharge_date))
             .first()
         )
+
+        latest_discharge_date = (
+            str(latest_discharge.discharge_date)
+            if latest_discharge and latest_discharge.discharge_date
+            else None
+        )
+
         return {
             "id": patient.id,
             "full_name": patient.full_name,
@@ -91,10 +117,16 @@ class FetchPatientService:
             "gender": patient.gender,
             "address": patient.address,
             "is_active": patient.is_active,
+            "is_discharged": patient.is_discharged,
             "discharge_date": (
-                str(latest_discharge.discharge_date)
-                if latest_discharge and latest_discharge.discharge_date
-                else None
+                latest_discharge_date if patient.is_discharged else None
             ),
             "latest_discharge_id": latest_discharge.id if latest_discharge else None,
+            "last_discharge_date": latest_discharge_date,
+            "patient_friendly_url": (
+                latest_discharge.patient_friendly_summary_url
+                if latest_discharge
+                else None
+            ),
+            "ird_url": latest_discharge.insurance_ready_url if latest_discharge else None,
         }

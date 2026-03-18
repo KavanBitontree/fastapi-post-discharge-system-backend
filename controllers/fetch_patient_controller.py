@@ -4,6 +4,19 @@ from services.fetch_patient_service import FetchPatientService
 
 class FetchPatientController:
     @staticmethod
+    def admit_patient(db: Session, patient_id: int):
+        patient = FetchPatientService.admit_patient(db, patient_id)
+        if not patient:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Patient with ID {patient_id} not found"
+            )
+        return {
+            "message": "Patient admitted successfully",
+            "patient": patient,
+        }
+
+    @staticmethod
     def list_patients(db: Session, search: str, page: int, size: int, sort: str):
         skip = (page - 1) * size 
         

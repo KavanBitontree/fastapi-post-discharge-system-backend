@@ -34,6 +34,7 @@ class PatientListItem(BaseModel):
     gender: Optional[str]
     address: Optional[str]
     is_active: bool
+    is_discharged: bool
     discharge_date: Optional[str]
 
 
