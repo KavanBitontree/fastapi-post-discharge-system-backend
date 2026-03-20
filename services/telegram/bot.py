@@ -155,6 +155,15 @@ _HELP = (
     "  \u2022 How much is my outstanding bill?"
 )
 
+# Shown when a new completed discharge is detected for the patient mid-session
+_NEW_DISCHARGE = (
+    "🔔 <b>Your records have been updated!</b>\n\n"
+    "The hospital has uploaded a new set of documents for you — "
+    "including the latest reports, bills, and prescriptions.\n\n"
+    "My answers from here on will be based on your <b>most recent discharge records</b>. "
+    "Feel free to ask anything! 💬"
+)
+
 # ── Phone helpers ─────────────────────────────────────────────────────────────
 
 _PHONE_RE = re.compile(r'^\+?\d[\d\s\-]{6,}\d$')
@@ -272,6 +281,51 @@ def _issue_otp(db: Session, sess: TelegramSession, patient: Patient) -> bool:
     return send_otp_sms(patient.phone_number or "", otp)
 
 
+def _refresh_discharge_id(db: Session, sess: TelegramSession) -> bool:
+    """
+    Check if a newer completed discharge exists for the patient linked to this session.
+    If yes, update sess.discharge_id to point to the latest one and commit.
+
+    Returns True if a swap happened so the caller can notify the patient.
+    Called at the start of every VERIFIED message — cheap single DB query.
+    Only swaps to 'completed' discharges so a patient is never pointed at a
+    pending/failed upload mid-processing.
+    """
+    if not sess.discharge_id:
+        return False
+
+    current_discharge = (
+        db.query(DischargeHistory)
+        .filter(DischargeHistory.id == sess.discharge_id)
+        .first()
+    )
+    if not current_discharge:
+        return False
+
+    patient_id = current_discharge.patient_id
+
+    latest_discharge = (
+        db.query(DischargeHistory)
+        .filter(
+            DischargeHistory.patient_id == patient_id,
+            DischargeHistory.status == "completed",
+        )
+        .order_by(DischargeHistory.created_at.desc())
+        .first()
+    )
+
+    if latest_discharge and latest_discharge.id != sess.discharge_id:
+        logger.info(
+            "Updating TelegramSession %s discharge_id: %s → %s (patient_id=%s)",
+            sess.id, sess.discharge_id, latest_discharge.id, patient_id,
+        )
+        sess.discharge_id = latest_discharge.id
+        db.commit()
+        return True  # caller should notify the patient
+
+    return False
+
+
 # ── State handlers ────────────────────────────────────────────────────────────
 
 def _handle_await_mobile(db: Session, sess: TelegramSession, chat_id: str, text: str) -> None:
@@ -386,6 +440,12 @@ def _handle_await_otp(db: Session, sess: TelegramSession, chat_id: str, text: st
 
 def _handle_verified(db: Session, sess: TelegramSession, chat_id: str, text: str) -> None:
     """Route message to LangGraph agent and reply with AI response."""
+
+    # Check if a newer completed discharge exists for this patient.
+    # If yes, update sess.discharge_id and notify the patient before answering.
+    if _refresh_discharge_id(db, sess):
+        send_message(chat_id, _NEW_DISCHARGE)
+
     cmd = text.split()[0].lower().split("@")[0] if text else ""
 
     if cmd in ("/start", "/help"):
@@ -456,6 +516,12 @@ async def _handle_verified_async(db: Session, sess: TelegramSession, chat_id: st
     Uses Telegram's native typing indicator with periodic refresh.
     Invokes graph with ainvoke() for non-blocking execution.
     """
+
+    # Check if a newer completed discharge exists for this patient.
+    # If yes, update sess.discharge_id and notify the patient before answering.
+    if _refresh_discharge_id(db, sess):
+        send_message(chat_id, _NEW_DISCHARGE)
+
     cmd = text.split()[0].lower().split("@")[0] if text else ""
 
     if cmd in ("/start", "/help"):
@@ -541,8 +607,6 @@ async def _handle_verified_async(db: Session, sess: TelegramSession, chat_id: st
     except Exception as exc:
         logger.error("LangGraph error for Telegram discharge %s: %s", discharge_id, exc, exc_info=True)
         send_message(chat_id, _AGENT_ERROR)
-
-
 
 
 def _split_message(text: str, limit: int = 4000) -> list[str]:
@@ -661,5 +725,3 @@ async def handle_update_async(update: dict) -> None:
             pass
     finally:
         db.close()
-
-
