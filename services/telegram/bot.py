@@ -405,6 +405,7 @@ def _handle_verified(db: Session, sess: TelegramSession, chat_id: str, text: str
         )
         return
 
+    placeholder_id: int | None = None
     try:
         # Import here to avoid circular imports at module load time
         from services.agent.graph import build_agent_graph
