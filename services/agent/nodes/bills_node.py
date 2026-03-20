@@ -91,6 +91,7 @@ RESPONSE STYLE — PLAIN TEXT ONLY
 
 PRESENTING BILLS TO THE PATIENT
 ================================
+- always use currency should be in dollars with a $ symbol
 - Always show amounts clearly: "$1,234.50" — use the $ symbol
 - Format dates as "15 Jan 2025" — not raw ISO strings
 - When showing line items, group them sensibly (procedures, medicines, consultations)
