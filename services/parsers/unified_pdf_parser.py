@@ -35,7 +35,7 @@ def _extract_pages_via_local_ocr(file_bytes: bytes, filename: str) -> list[str]:
 
     The OCR service is expected to remove confidential details before returning text.
     """
-    with httpx.Client(timeout=300.0) as client:
+    with httpx.Client(timeout=800.0) as client:
         response = client.post(
             LOCAL_OCR_EXTRACT_URL,
             files={"file": (filename, file_bytes, "application/pdf")},
