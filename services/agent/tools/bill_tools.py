@@ -25,10 +25,10 @@ def _bill_header(b: Bill, today: date_type) -> str:
         f"Invoice #{b.invoice_number}{overdue}\n"
         f"  Invoice date  : {inv_date}\n"
         f"  Due date      : {due_str}\n"
-        f"  Initial amount: \u20b9{b.initial_amount}\n"
-        f"  Discount      : \u20b9{b.discount_amount or 0}\n"
-        f"  Tax           : \u20b9{b.tax_amount or 0}\n"
-        f"  Total amount  : \u20b9{b.total_amount}"
+        f"  Initial amount: ${b.initial_amount}\n"
+        f"  Discount      : ${b.discount_amount or 0}\n"
+        f"  Tax           : ${b.tax_amount or 0}\n"
+        f"  Total amount  : ${b.total_amount}"
     )
 
 
@@ -38,7 +38,7 @@ def _bill_line(d: BillDescription) -> str:
     desc = d.description or "Service"
     return (
         f"  \u2022 {desc} | {cpt}"
-        f"Qty: {d.qty} \u00d7 \u20b9{d.unit_price} = \u20b9{d.total_price}"
+        f"Qty: {d.qty} \u00d7 ${d.unit_price} = ${d.total_price}"
     )
 
 
@@ -71,8 +71,8 @@ def build_bill_tools(discharge_id: int, db: Session) -> list:
                 overdue = ""
             lines.append(
                 f"• Invoice #{b.invoice_number}{overdue} | Date: {inv_date} "
-                f"| Initial: \u20b9{b.initial_amount} | Discount: \u20b9{b.discount_amount or 0} "
-                f"| Tax: \u20b9{b.tax_amount or 0} | Total: \u20b9{b.total_amount} | Due: {due_str}"
+                f"| Initial: ${b.initial_amount} | Discount: ${b.discount_amount or 0} "
+                f"| Tax: ${b.tax_amount or 0} | Total: ${b.total_amount} | Due: {due_str}"
             )
         return "Patient's bills:\n" + "\n".join(lines)
 
@@ -123,7 +123,7 @@ def build_bill_tools(discharge_id: int, db: Session) -> list:
 
         today = date_type.today()
         total = sum(float(b.total_amount) for b in bills)
-        lines = [f"Total outstanding across {len(bills)} invoice(s): \u20b9{total:.2f}", "", "Per-bill breakdown:"]
+        lines = [f"Total outstanding across {len(bills)} invoice(s): ${total:.2f}", "", "Per-bill breakdown:"]
         for b in bills:
             inv_date = b.invoice_date.strftime("%d %b %Y") if b.invoice_date else "N/A"
             if b.due_date:
@@ -134,7 +134,7 @@ def build_bill_tools(discharge_id: int, db: Session) -> list:
                 overdue = ""
             lines.append(
                 f"  • Invoice #{b.invoice_number}{overdue} | Date: {inv_date} "
-                f"| Total: \u20b9{b.total_amount} | Due: {due_str}"
+                f"| Total: ${b.total_amount} | Due: {due_str}"
             )
         return "\n".join(lines)
 
@@ -191,7 +191,7 @@ def build_bill_tools(discharge_id: int, db: Session) -> list:
                 sections.append(header + "\n  No line items.")
 
         total = sum(float(b.total_amount) for b in bills)
-        summary = f"Grand total across {len(bills)} invoice(s): \u20b9{total:.2f}"
+        summary = f"Grand total across {len(bills)} invoice(s): ${total:.2f}"
         return "=== Complete Billing History ===\n\n" + "\n\n".join(sections) + f"\n\n{summary}"
 
     return [get_all_bills, get_bill_details, get_total_outstanding, get_latest_bill, get_all_bill_data]
